@@ -76,12 +76,13 @@ pub struct Scrolled {
 
 /// Editable text, drawn as the lines its field broke it into, with a caret.
 #[derive(Debug, PartialEq)]
-pub struct TextField<'a, F: Font, const N: usize, K = ()> {
+pub struct TextField<'a, F: Font, T, K = ()> {
     pub origin: Point,
     pub size: Size,
     pub font: &'a F,
     pub attributes: F::Attributes,
-    pub text: heapless::String<N>,
+    /// The whole text, which the lines index into.
+    pub text: T,
     /// The byte ranges of the lines shown, top to bottom.
     pub lines: heapless::Vec<Range<u16>, MAX_VISIBLE_LINES>,
     pub line_height: u32,
@@ -93,7 +94,7 @@ pub struct TextField<'a, F: Font, const N: usize, K = ()> {
     pub style: K,
 }
 
-impl<F: Font, const N: usize, K: Clone> Clone for TextField<'_, F, N, K> {
+impl<F: Font, T: Clone, K: Clone> Clone for TextField<'_, F, T, K> {
     fn clone(&self) -> Self {
         Self {
             origin: self.origin,
@@ -110,7 +111,7 @@ impl<F: Font, const N: usize, K: Clone> Clone for TextField<'_, F, N, K> {
     }
 }
 
-impl<F: Font, const N: usize, K> TextField<'_, F, N, K> {
+impl<F: Font, T: AsRef<str>, K> TextField<'_, F, T, K> {
     fn draw<C: Copy>(
         &self,
         render_target: &mut impl RenderTarget<ColorFormat = C>,
@@ -130,6 +131,7 @@ impl<F: Font, const N: usize, K> TextField<'_, F, N, K> {
         for range in &self.lines {
             let line = self
                 .text
+                .as_ref()
                 .get(usize::from(range.start)..usize::from(range.end))
                 .unwrap_or_default();
             // Spaces hanging at the end of a line, and its newline, take no
@@ -188,15 +190,15 @@ impl<F: Font, const N: usize, K> TextField<'_, F, N, K> {
     }
 }
 
-impl<F: Font, const N: usize, K> AnimatedJoin for TextField<'_, F, N, K> {
+impl<F: Font, T, K> AnimatedJoin for TextField<'_, F, T, K> {
     fn join_from(&mut self, source: &Self, domain: &AnimationDomain) {
         // The text and caret jump; the field moves.
         self.origin = Interpolate::interpolate(source.origin, self.origin, domain.factor);
     }
 }
 
-impl<C: Copy, F: FontRender<C>, const N: usize, K: AreaStyle<C>> Render<C>
-    for TextField<'_, F, N, K>
+impl<C: Copy, F: FontRender<C>, T: AsRef<str>, K: AreaStyle<C>> Render<C>
+    for TextField<'_, F, T, K>
 {
     fn render(&self, render_target: &mut impl RenderTarget<ColorFormat = C>, style: &C) {
         self.draw(render_target, style, self.origin);
@@ -214,7 +216,7 @@ impl<C: Copy, F: FontRender<C>, const N: usize, K: AreaStyle<C>> Render<C>
     }
 }
 
-impl<F: Font, const N: usize, K> IntrinsicShape for TextField<'_, F, N, K> {
+impl<F: Font, T, K> IntrinsicShape for TextField<'_, F, T, K> {
     fn content_shape(&self) -> ContentShape {
         Rectangle::new(self.origin, self.size).into()
     }
@@ -226,7 +228,7 @@ mod tests {
     use crate::font::CharacterBufferFont;
     use crate::render_target::FixedTextBuffer;
 
-    fn field<K>(caret_style: K) -> TextField<'static, CharacterBufferFont, 8, K> {
+    fn field<K>(caret_style: K) -> TextField<'static, CharacterBufferFont, heapless::String<8>, K> {
         TextField {
             origin: Point::zero(),
             size: Size::new(4, 1),

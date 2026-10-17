@@ -14,12 +14,12 @@ use buoyant::{
 
 static FONT: CharacterBufferFont = CharacterBufferFont;
 
-type Tree = render::TextField<'static, CharacterBufferFont, 16>;
+type Tree = render::TextField<'static, CharacterBufferFont, heapless::String<16>>;
 
 #[derive(Default)]
 struct State {
     focus: FocusState,
-    drafts: [EditBuffer<16>; 2],
+    drafts: [EditBuffer<heapless::String<16>>; 2],
     shown: usize,
     sent: heapless::Vec<heapless::String<16>, 4>,
 }
@@ -215,7 +215,8 @@ fn a_long_draft_scrolls_to_keep_the_cursor_in_view() {
     assert_eq!(shown(&app).1, Some(caret(0, 0)));
 }
 
-type BarTree = render::TextField<'static, CharacterBufferFont, 16, render::AreaColors<()>>;
+type BarTree =
+    render::TextField<'static, CharacterBufferFont, heapless::String<16>, render::AreaColors<()>>;
 
 /// A one-line field with a scroll bar.
 fn with_bar(state: &State) -> impl View<(), State> + ViewMarker<Renderables = BarTree> + use<> {
@@ -319,7 +320,7 @@ fn a_field_takes_focus_only_with_the_text_entry_role() {
 
 #[derive(Default)]
 struct Looks {
-    draft: EditBuffer<16>,
+    draft: EditBuffer<heapless::String<16>>,
 }
 
 /// A field inset further while it is edited, so its status shows in its size.
@@ -345,4 +346,55 @@ fn the_label_follows_the_field_status() {
     assert!(app.select().is_handled());
     app.finalize_view();
     assert_eq!(shape(&app), Size::new(6, 1));
+}
+
+/// Text shared by counted reference, copied only when edited.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Shared(std::rc::Rc<str>);
+
+impl AsRef<str> for Shared {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl buoyant::view::EditText for Shared {
+    fn splice(&mut self, range: core::ops::Range<usize>, with: &str) -> bool {
+        let mut text = String::from(&*self.0);
+        text.replace_range(range, with);
+        self.0 = text.into();
+        true
+    }
+}
+
+#[derive(Default)]
+struct SharedDraft {
+    draft: EditBuffer<Shared>,
+}
+
+fn shared_field(
+    state: &SharedDraft,
+) -> impl View<(), SharedDraft>
++ ViewMarker<Renderables = render::TextField<'static, CharacterBufferFont, Shared>>
++ use<> {
+    TextField::new(&state.draft, &FONT, |s: &mut SharedDraft| {
+        Some(&mut s.draft)
+    })
+}
+
+#[test]
+fn the_field_shows_shared_text_without_copying_it() {
+    let mut app = App::new(SharedDraft::default(), Size::new(10, 1), shared_field)
+        .with_roles(Role::TextEntry);
+    assert!(app.focus_forward().is_handled());
+    for c in "hello".chars() {
+        assert!(app.key_down(Key::Character(c)).is_handled());
+    }
+    app.finalize_view();
+    let shown = &app.render_trees().target().text;
+    assert_eq!(shown.as_ref(), "hello");
+    assert!(std::rc::Rc::ptr_eq(
+        &shown.0,
+        &app.state().draft.storage().0
+    ));
 }

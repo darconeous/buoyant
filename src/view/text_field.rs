@@ -16,18 +16,46 @@ use crate::{
     view::{ViewLayout, ViewMarker},
 };
 
+/// Where an [`EditBuffer`] keeps its text.
+///
+/// A field's views and both of its render trees each hold a clone of the
+/// text they show. A [`heapless::String`] is copied each time; storage that
+/// shares its text when cloned, such as a counted reference that copies on
+/// write, keeps long text cheap to show.
+pub trait EditText: AsRef<str> + Clone {
+    /// Replaces the bytes in `range`, which lies on character boundaries,
+    /// with `with`.
+    ///
+    /// Returns `false`, changing nothing, when the result does not fit.
+    fn splice(&mut self, range: Range<usize>, with: &str) -> bool;
+}
+
+impl<const N: usize> EditText for heapless::String<N> {
+    fn splice(&mut self, range: Range<usize>, with: &str) -> bool {
+        if self.len() - range.len() + with.len() > N {
+            return false;
+        }
+        let mut tail = Self::new();
+        _ = tail.push_str(&self[range.end..]);
+        self.truncate(range.start);
+        _ = self.push_str(with);
+        _ = self.push_str(&tail);
+        true
+    }
+}
+
 /// Text being edited, and the position of the cursor in it.
 ///
 /// It lives in application data, so it outlives the field that edits it:
-/// a draft is kept when its field goes away.
+/// a draft is kept when its field goes away. Its text is kept in `T`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct EditBuffer<const N: usize> {
-    text: heapless::String<N>,
+pub struct EditBuffer<T> {
+    text: T,
     /// A byte index on a character boundary.
     cursor: usize,
 }
 
-impl<const N: usize> EditBuffer<N> {
+impl<const N: usize> EditBuffer<heapless::String<N>> {
     /// An empty buffer.
     #[must_use]
     pub const fn new() -> Self {
@@ -36,10 +64,25 @@ impl<const N: usize> EditBuffer<N> {
             cursor: 0,
         }
     }
+}
+
+impl<T: EditText> EditBuffer<T> {
+    /// A buffer holding `text`, with the cursor at its end.
+    #[must_use]
+    pub fn with_text(text: T) -> Self {
+        let cursor = text.as_ref().len();
+        Self { text, cursor }
+    }
 
     /// The text.
     #[must_use]
     pub fn text(&self) -> &str {
+        self.text.as_ref()
+    }
+
+    /// The text as it is stored, to show without copying.
+    #[must_use]
+    pub fn storage(&self) -> &T {
         &self.text
     }
 
@@ -52,12 +95,13 @@ impl<const N: usize> EditBuffer<N> {
     /// Whether there is no text.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.text.is_empty()
+        self.text().is_empty()
     }
 
     /// Removes all of the text.
     pub fn clear(&mut self) {
-        self.text.clear();
+        let len = self.text().len();
+        _ = self.text.splice(0..len, "");
         self.cursor = 0;
     }
 
@@ -65,15 +109,10 @@ impl<const N: usize> EditBuffer<N> {
     ///
     /// Returns `false`, changing nothing, when the text is full.
     pub fn insert(&mut self, c: char) -> bool {
-        if self.text.len() + c.len_utf8() > N {
+        let cursor = self.cursor();
+        if !self.text.splice(cursor..cursor, c.encode_utf8(&mut [0; 4])) {
             return false;
         }
-        let cursor = self.cursor();
-        let mut tail = heapless::String::<N>::new();
-        _ = tail.push_str(&self.text[cursor..]);
-        self.text.truncate(cursor);
-        _ = self.text.push(c);
-        _ = self.text.push_str(&tail);
         self.cursor = cursor + c.len_utf8();
         true
     }
@@ -83,14 +122,13 @@ impl<const N: usize> EditBuffer<N> {
     /// Returns `false` when the cursor is at the start.
     pub fn erase_back(&mut self) -> bool {
         let cursor = self.cursor();
-        let Some(c) = self.text[..cursor].chars().next_back() else {
+        let Some(c) = self.text()[..cursor].chars().next_back() else {
             return false;
         };
         let start = cursor - c.len_utf8();
-        let mut tail = heapless::String::<N>::new();
-        _ = tail.push_str(&self.text[cursor..]);
-        self.text.truncate(start);
-        _ = self.text.push_str(&tail);
+        if !self.text.splice(start..cursor, "") {
+            return false;
+        }
         self.cursor = start;
         true
     }
@@ -98,7 +136,7 @@ impl<const N: usize> EditBuffer<N> {
     /// Moves the cursor back one character. Returns `false` at the start.
     pub fn move_back(&mut self) -> bool {
         let cursor = self.cursor();
-        match self.text[..cursor].chars().next_back() {
+        match self.text()[..cursor].chars().next_back() {
             Some(c) => {
                 self.cursor = cursor - c.len_utf8();
                 true
@@ -110,7 +148,7 @@ impl<const N: usize> EditBuffer<N> {
     /// Moves the cursor forward one character. Returns `false` at the end.
     pub fn move_forward(&mut self) -> bool {
         let cursor = self.cursor();
-        match self.text[cursor..].chars().next() {
+        match self.text()[cursor..].chars().next() {
             Some(c) => {
                 self.cursor = cursor + c.len_utf8();
                 true
@@ -122,7 +160,7 @@ impl<const N: usize> EditBuffer<N> {
     /// Moves the cursor to the start of the next word, or the end.
     pub fn move_forward_word(&mut self) -> bool {
         let start = self.cursor();
-        let rest = &self.text[start..];
+        let rest = &self.text()[start..];
         let word_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
         let next_word = rest[word_end..]
             .find(|c: char| !c.is_whitespace())
@@ -134,7 +172,7 @@ impl<const N: usize> EditBuffer<N> {
     /// Moves the cursor to the start of this word or the one before it.
     pub fn move_back_word(&mut self) -> bool {
         let start = self.cursor();
-        let before = self.text[..start].trim_end();
+        let before = self.text()[..start].trim_end();
         let word_start = before.rfind(char::is_whitespace).map_or(0, |i| {
             i + before[i..].chars().next().map_or(1, char::len_utf8)
         });
@@ -144,18 +182,18 @@ impl<const N: usize> EditBuffer<N> {
 
     /// The nearest character boundary at or before `index`.
     fn clamped(&self, index: usize) -> usize {
-        let mut index = index.min(self.text.len());
-        while !self.text.is_char_boundary(index) {
+        let mut index = index.min(self.text().len());
+        while !self.text().is_char_boundary(index) {
             index -= 1;
         }
         index
     }
 }
 
-impl<const N: usize> From<&str> for EditBuffer<N> {
+impl<T: EditText + Default> From<&str> for EditBuffer<T> {
     /// A buffer holding as much of `text` as fits, with the cursor at its end.
     fn from(text: &str) -> Self {
-        let mut buffer = Self::new();
+        let mut buffer = Self::default();
         for c in text.chars() {
             if !buffer.insert(c) {
                 break;
@@ -303,8 +341,8 @@ impl TextFieldStatus {
 /// Like a [`Button`](crate::view::Button)'s, the field's look comes from a
 /// label function, given the field's [`TextFieldStatus`] and its
 /// [`TextArea`] to place, as with [`with_label`](Self::with_label).
-pub struct TextField<'a, const N: usize, F: Font, L, S, ViewFn> {
-    buffer: EditBuffer<N>,
+pub struct TextField<'a, B, F: Font, L, S, ViewFn> {
+    buffer: EditBuffer<B>,
     lens: L,
     on_submit: S,
     font: &'a F,
@@ -315,10 +353,11 @@ pub struct TextField<'a, const N: usize, F: Font, L, S, ViewFn> {
 }
 
 /// The label of a field that shows only its text.
-pub type PlainLabel<'a, const N: usize, F> =
-    fn(TextFieldStatus, TextArea<'a, N, F>) -> TextArea<'a, N, F>;
+pub type PlainLabel<'a, B, F> = fn(TextFieldStatus, TextArea<'a, B, F>) -> TextArea<'a, B, F>;
 
-impl<const N: usize, F: Font, L, S, ViewFn> core::fmt::Debug for TextField<'_, N, F, L, S, ViewFn> {
+impl<B: EditText + core::fmt::Debug, F: Font, L, S, ViewFn> core::fmt::Debug
+    for TextField<'_, B, F, L, S, ViewFn>
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TextField")
             .field("buffer", &self.buffer)
@@ -327,7 +366,7 @@ impl<const N: usize, F: Font, L, S, ViewFn> core::fmt::Debug for TextField<'_, N
     }
 }
 
-impl<'a, const N: usize, F: Font, L> TextField<'a, N, F, L, NoSubmit, PlainLabel<'a, N, F>> {
+impl<'a, B: EditText, F: Font, L> TextField<'a, B, F, L, NoSubmit, PlainLabel<'a, B, F>> {
     /// A field showing `buffer`, which edits the buffer `lens` reaches.
     ///
     /// The lens is called each time the field edits, and should reach the
@@ -335,9 +374,9 @@ impl<'a, const N: usize, F: Font, L> TextField<'a, N, F, L, NoSubmit, PlainLabel
     /// so an edit never lands in another buffer. When it finds none, the
     /// field changes nothing.
     #[must_use]
-    pub fn new<C: ?Sized>(buffer: &EditBuffer<N>, font: &'a F, lens: L) -> Self
+    pub fn new<C: ?Sized>(buffer: &EditBuffer<B>, font: &'a F, lens: L) -> Self
     where
-        L: Fn(&mut C) -> Option<&mut EditBuffer<N>>,
+        L: Fn(&mut C) -> Option<&mut EditBuffer<B>>,
     {
         Self {
             buffer: buffer.clone(),
@@ -352,13 +391,13 @@ impl<'a, const N: usize, F: Font, L> TextField<'a, N, F, L, NoSubmit, PlainLabel
     }
 }
 
-impl<'a, const N: usize, F: Font, L, S, ViewFn> TextField<'a, N, F, L, S, ViewFn> {
+impl<'a, B: EditText, F: Font, L, S, ViewFn> TextField<'a, B, F, L, S, ViewFn> {
     /// Runs `on_submit` when Enter is pressed while the field is active.
     #[must_use]
     pub fn on_submit<C: ?Sized, T: Fn(&mut C)>(
         self,
         on_submit: T,
-    ) -> TextField<'a, N, F, L, T, ViewFn> {
+    ) -> TextField<'a, B, F, L, T, ViewFn> {
         TextField {
             buffer: self.buffer,
             lens: self.lens,
@@ -373,9 +412,9 @@ impl<'a, const N: usize, F: Font, L, S, ViewFn> TextField<'a, N, F, L, S, ViewFn
 
     /// Draws the field with `label`, given its status and its text area.
     #[must_use]
-    pub fn with_label<Inner, T>(self, label: T) -> TextField<'a, N, F, L, S, T>
+    pub fn with_label<Inner, T>(self, label: T) -> TextField<'a, B, F, L, S, T>
     where
-        T: Fn(TextFieldStatus, TextArea<'a, N, F>) -> Inner,
+        T: Fn(TextFieldStatus, TextArea<'a, B, F>) -> Inner,
     {
         TextField {
             buffer: self.buffer,
@@ -404,7 +443,7 @@ impl<'a, const N: usize, F: Font, L, S, ViewFn> TextField<'a, N, F, L, S, ViewFn
     }
 
     /// The text area for a field with `status`.
-    fn area(&self, status: TextFieldStatus) -> TextArea<'a, N, F> {
+    fn area(&self, status: TextFieldStatus) -> TextArea<'a, B, F> {
         TextArea {
             buffer: self.buffer.clone(),
             font: self.font,
@@ -418,9 +457,7 @@ impl<'a, const N: usize, F: Font, L, S, ViewFn> TextField<'a, N, F, L, S, ViewFn
     }
 }
 
-impl<const N: usize, F: Font<Attributes: CustomSize>, L, S, ViewFn>
-    TextField<'_, N, F, L, S, ViewFn>
-{
+impl<B: EditText, F: Font<Attributes: CustomSize>, L, S, ViewFn> TextField<'_, B, F, L, S, ViewFn> {
     /// Sets the font size.
     #[must_use]
     pub fn with_font_size(self, size: u32) -> Self {
@@ -431,22 +468,21 @@ impl<const N: usize, F: Font<Attributes: CustomSize>, L, S, ViewFn>
     }
 }
 
-impl<'a, const N: usize, F: Font, L, S, ViewFn, Inner> ViewMarker
-    for TextField<'a, N, F, L, S, ViewFn>
+impl<'a, B: EditText, F: Font, L, S, ViewFn, Inner> ViewMarker for TextField<'a, B, F, L, S, ViewFn>
 where
-    ViewFn: Fn(TextFieldStatus, TextArea<'a, N, F>) -> Inner,
+    ViewFn: Fn(TextFieldStatus, TextArea<'a, B, F>) -> Inner,
     Inner: ViewMarker<Renderables: IntrinsicShape>,
 {
     type Renderables = Inner::Renderables;
     type Transition = Opacity;
 }
 
-impl<'a, C: ?Sized, const N: usize, F: Font, L, S, ViewFn, Inner> ViewLayout<C>
-    for TextField<'a, N, F, L, S, ViewFn>
+impl<'a, C: ?Sized, B: EditText, F: Font, L, S, ViewFn, Inner> ViewLayout<C>
+    for TextField<'a, B, F, L, S, ViewFn>
 where
-    L: Fn(&mut C) -> Option<&mut EditBuffer<N>>,
+    L: Fn(&mut C) -> Option<&mut EditBuffer<B>>,
     S: OnSubmit<C>,
-    ViewFn: Fn(TextFieldStatus, TextArea<'a, N, F>) -> Inner,
+    ViewFn: Fn(TextFieldStatus, TextArea<'a, B, F>) -> Inner,
     Inner: ViewLayout<C, Renderables: IntrinsicShape>,
 {
     type State = (TextFieldStatus, Inner::State);
@@ -550,7 +586,7 @@ where
     }
 }
 
-impl<const N: usize, F: Font, L, S, ViewFn> TextField<'_, N, F, L, S, ViewFn> {
+impl<B: EditText, F: Font, L, S, ViewFn> TextField<'_, B, F, L, S, ViewFn> {
     fn handle_focus<C: ?Sized>(
         &self,
         action: FocusAction,
@@ -560,7 +596,7 @@ impl<const N: usize, F: Font, L, S, ViewFn> TextField<'_, N, F, L, S, ViewFn> {
         shape: ContentShape,
     ) -> EventResult
     where
-        L: Fn(&mut C) -> Option<&mut EditBuffer<N>>,
+        L: Fn(&mut C) -> Option<&mut EditBuffer<B>>,
     {
         let before = *status;
         let result = match action {
@@ -610,7 +646,7 @@ impl<const N: usize, F: Font, L, S, ViewFn> TextField<'_, N, F, L, S, ViewFn> {
         status: &mut TextFieldStatus,
     ) -> EventResult
     where
-        L: Fn(&mut C) -> Option<&mut EditBuffer<N>>,
+        L: Fn(&mut C) -> Option<&mut EditBuffer<B>>,
         S: OnSubmit<C>,
     {
         if !status.active {
@@ -662,8 +698,8 @@ impl<const N: usize, F: Font, L, S, ViewFn> TextField<'_, N, F, L, S, ViewFn> {
 /// It is as wide as offered, or as its text when not offered a width, and
 /// grows to the field's line limit, then scrolls within itself to keep the
 /// cursor in view.
-pub struct TextArea<'a, const N: usize, F: Font, K = ()> {
-    buffer: EditBuffer<N>,
+pub struct TextArea<'a, B, F: Font, K = ()> {
+    buffer: EditBuffer<B>,
     font: &'a F,
     attributes: F::Attributes,
     max_lines: u16,
@@ -677,7 +713,7 @@ pub struct TextArea<'a, const N: usize, F: Font, K = ()> {
 /// The space between a text field's lines and its scroll bar.
 const SCROLL_BAR_GAP: u32 = 7;
 
-impl<'a, const N: usize, F: Font> TextArea<'a, N, F> {
+impl<'a, B: EditText, F: Font> TextArea<'a, B, F> {
     /// Draws the caret, and a scroll bar for text longer than the area, in
     /// `colors`.
     ///
@@ -687,7 +723,7 @@ impl<'a, const N: usize, F: Font> TextArea<'a, N, F> {
     pub fn colors<C>(
         self,
         colors: render::AreaColors<C>,
-    ) -> TextArea<'a, N, F, render::AreaColors<C>> {
+    ) -> TextArea<'a, B, F, render::AreaColors<C>> {
         TextArea {
             buffer: self.buffer,
             font: self.font,
@@ -705,7 +741,7 @@ impl<'a, const N: usize, F: Font> TextArea<'a, N, F> {
     }
 }
 
-impl<const N: usize, F: Font, K> core::fmt::Debug for TextArea<'_, N, F, K> {
+impl<B: EditText + core::fmt::Debug, F: Font, K> core::fmt::Debug for TextArea<'_, B, F, K> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TextArea")
             .field("buffer", &self.buffer)
@@ -724,12 +760,12 @@ pub struct TextAreaLayout {
     scrolled: Option<render::Scrolled>,
 }
 
-impl<'a, const N: usize, F: Font, K: Clone> ViewMarker for TextArea<'a, N, F, K> {
-    type Renderables = render::TextField<'a, F, N, K>;
+impl<'a, B: EditText, F: Font, K: Clone> ViewMarker for TextArea<'a, B, F, K> {
+    type Renderables = render::TextField<'a, F, B, K>;
     type Transition = Opacity;
 }
 
-impl<C: ?Sized, const N: usize, F: Font, K: Clone> ViewLayout<C> for TextArea<'_, N, F, K> {
+impl<C: ?Sized, B: EditText, F: Font, K: Clone> ViewLayout<C> for TextArea<'_, B, F, K> {
     /// The first line shown when the text is longer than the area.
     type State = u16;
     type Sublayout = TextAreaLayout;
@@ -932,7 +968,7 @@ mod tests {
 
     #[test]
     fn a_full_buffer_refuses_input() {
-        let mut buffer = EditBuffer::<4>::from("abc");
+        let mut buffer = EditBuffer::<heapless::String<4>>::from("abc");
         assert!(!buffer.insert('é'));
         assert!(buffer.insert('d'));
         assert!(!buffer.insert('e'));
@@ -942,7 +978,7 @@ mod tests {
 
     #[test]
     fn editing_keeps_to_character_boundaries() {
-        let mut buffer = EditBuffer::<16>::from("aéb");
+        let mut buffer = EditBuffer::<heapless::String<16>>::from("aéb");
         assert!(buffer.move_back());
         assert!(buffer.move_back());
         assert_eq!(buffer.cursor(), 1);
@@ -956,7 +992,7 @@ mod tests {
 
     #[test]
     fn words_are_stepped_over_by_their_starts() {
-        let mut buffer = EditBuffer::<32>::from("one  two three");
+        let mut buffer = EditBuffer::<heapless::String<32>>::from("one  two three");
         assert!(buffer.move_back_word());
         assert_eq!(buffer.cursor(), 9);
         assert!(buffer.move_back_word());
