@@ -4,6 +4,7 @@
 //! and interacting with the UI, with default implementations built on top of
 //! [`Harness::send`] and [`Harness::send_with_group`].
 
+use core::mem::MaybeUninit;
 use core::time::Duration;
 
 use crate::{
@@ -149,14 +150,92 @@ where
         }
     }
 
+    /// Creates an `App` in `slot`, like [`new`](Self::new), and returns it.
+    ///
+    /// An `App` holds the state, the view, and two render trees, which
+    /// together can be larger than a small device's stack. Returned by value,
+    /// it is assembled on the stack and copied into place; this builds each
+    /// part where it stays, so the stack holds only the layout and one
+    /// render tree while it is built.
+    #[allow(unsafe_code)]
+    pub fn new_in(slot: &mut MaybeUninit<Self>, state: S, size: Size, view_fn: F) -> &mut Self
+    where
+        S: 'static,
+    {
+        // Does not compile when a field is added, so that it is written below.
+        let _ = |app: Self| {
+            let Self {
+                state: _,
+                view_fn: _,
+                view: _,
+                view_state: _,
+                trees: _,
+                focus_tree: _,
+                env: _,
+                focus_shape: _,
+                focused_key: _,
+                focus_group: _,
+                focus_binding: _,
+                focus_request: _,
+                redirecting: _,
+                roles: _,
+                size: _,
+                elapsed: _,
+                requires_redraw: _,
+                requires_rebuild: _,
+            } = app;
+        };
+        let app = slot.as_mut_ptr();
+        // SAFETY: each field is written once, through a pointer to that field
+        // alone, before anything reads it, and every field is written before
+        // the slot is treated as initialized. The references taken along the
+        // way are to distinct fields, so none alias. Should building panic,
+        // the slot stays uninitialized and the fields written so far leak.
+        unsafe {
+            (&raw mut (*app).state).write(state);
+            (&raw mut (*app).view_fn).write(view_fn);
+            (&raw mut (*app).env).write(DefaultEnvironment::non_animated());
+            let state = &mut (*app).state;
+            let env = &(*app).env;
+            (&raw mut (*app).view).write(((*app).view_fn)(state));
+            let view = &(*app).view;
+            (&raw mut (*app).view_state).write(view.build_state(state));
+            let view_state = &mut (*app).view_state;
+            let layout = view.layout(&size.into(), env, state, view_state);
+            let trees = &raw mut (*app).trees;
+            Trees::write_in(trees, || {
+                view.render_tree(&layout.sublayouts, Point::zero(), env, state, view_state)
+            });
+            (&raw mut (*app).focus_tree).write(DefaultFocus::default_first());
+            (&raw mut (*app).focus_shape).write(ContentShape::Empty);
+            (&raw mut (*app).focused_key).write(None);
+            (&raw mut (*app).focus_group).write(crate::focus::GROUP_0);
+            (&raw mut (*app).focus_binding).write(None);
+            (&raw mut (*app).focus_request).write(None);
+            (&raw mut (*app).redirecting).write(false);
+            (&raw mut (*app).roles).write(Role::Button | Role::Container);
+            (&raw mut (*app).size).write(size);
+            (&raw mut (*app).elapsed).write(Duration::default());
+            (&raw mut (*app).requires_redraw).write(true);
+            (&raw mut (*app).requires_rebuild).write(false);
+            slot.assume_init_mut()
+        }
+    }
+
     /// Sets the default roles for focus navigation.
     ///
     /// Roles determine which types of focusable elements (buttons, containers, etc.)
     /// respond to focus events.
     #[must_use]
     pub fn with_roles(mut self, roles: impl Into<RoleSet>) -> Self {
-        self.roles = roles.into();
+        self.set_roles(roles);
         self
+    }
+
+    /// Sets the default roles for focus navigation, as
+    /// [`with_roles`](Self::with_roles) does.
+    pub fn set_roles(&mut self, roles: impl Into<RoleSet>) {
+        self.roles = roles.into();
     }
 
     /// Initializes the focus tree to the last element.
@@ -175,8 +254,14 @@ where
     /// screen of a navigation stack.
     #[must_use]
     pub fn with_focus_binding(mut self, binding: fn(&mut S) -> &mut FocusState) -> Self {
-        self.focus_binding = Some(binding);
+        self.set_focus_binding(binding);
         self
+    }
+
+    /// Keeps focus in application state, as
+    /// [`with_focus_binding`](Self::with_focus_binding) does.
+    pub fn set_focus_binding(&mut self, binding: fn(&mut S) -> &mut FocusState) {
+        self.focus_binding = Some(binding);
     }
 
     /// Asks for focus to move to the element with `key`, and settles focus.

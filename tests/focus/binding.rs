@@ -87,6 +87,20 @@ fn a_request_moves_focus_and_is_recorded() {
 }
 
 #[test]
+fn an_app_built_in_place_works_as_one_returned() {
+    let mut slot = core::mem::MaybeUninit::uninit();
+    let view: fn(&State) -> _ = three_dials;
+    let app = App::new_in(&mut slot, State::default(), Size::new(100, 200), view);
+    app.set_roles(Role::Button);
+    app.set_focus_binding(bind);
+    capture(app, 1);
+    assert!(is_captive(app, 1));
+    app.focus(key(2));
+    assert_eq!(app.state().focus.current(), Some(key(2)));
+    assert_eq!(app.state().exits, exits(&[(1, 1)]));
+}
+
+#[test]
 fn a_jump_releases_the_captive_control_once() {
     let mut app = app(State::default(), three_dials);
     capture(&mut app, 0);

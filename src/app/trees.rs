@@ -15,6 +15,24 @@ impl<T> Trees<T> {
         }
     }
 
+    /// Writes trees built by `build` into `this`, each in its place, as
+    /// [`new`](Self::new) would with two of them.
+    ///
+    /// # Safety
+    ///
+    /// `this` must be valid for writes and properly aligned. Whatever it held
+    /// is overwritten without being dropped.
+    #[allow(unsafe_code)]
+    pub(super) unsafe fn write_in(this: *mut Self, mut build: impl FnMut() -> T) {
+        // SAFETY: the caller provides a valid place, and each field is
+        // written through a pointer to that field alone.
+        unsafe {
+            (&raw mut (*this).tree_a).write(build());
+            (&raw mut (*this).tree_b).write(build());
+            (&raw mut (*this).source_is_a).write(true);
+        }
+    }
+
     /// Returns a reference to the source tree.
     #[must_use]
     pub fn source(&self) -> &T {
