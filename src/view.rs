@@ -12,6 +12,7 @@ mod geometry_reader;
 mod hstack;
 #[cfg(feature = "embedded-graphics")]
 mod image;
+mod lazy;
 #[allow(missing_docs)]
 pub mod match_view;
 mod modifier;
@@ -39,6 +40,7 @@ pub use geometry_reader::GeometryReader;
 pub use hstack::HStack;
 #[cfg(feature = "embedded-graphics")]
 pub use image::Image;
+pub use lazy::Lazy;
 pub use modifier::aspect_ratio;
 pub use modifier::map_event;
 pub use modifier::padding;
