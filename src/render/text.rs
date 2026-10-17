@@ -23,6 +23,8 @@ pub struct Text<'a, T, F: Font> {
     pub attributes: F::Attributes,
     pub alignment: HorizontalTextAlignment,
     pub max_lines: u16,
+    /// More text follows the last line, which ends in an ellipsis.
+    pub truncated: bool,
     pub wrap: WrapStrategy,
 }
 
@@ -46,9 +48,31 @@ impl<'a, T: AsRef<str>, F: Font> Text<'a, T, F> {
             attributes,
             alignment,
             max_lines,
+            truncated: false,
             wrap,
         }
     }
+}
+
+const ELLIPSIS: char = '…';
+
+/// The longest prefix of `text` that fits `width` with an ellipsis after
+/// it, without trailing spaces.
+fn truncated_prefix<'t>(text: &'t str, width: u32, metrics: &impl FontMetrics) -> &'t str {
+    let budget = width.saturating_sub(metrics.advance(ELLIPSIS));
+    let mut used = 0;
+    let mut end = 0;
+    for (i, c) in text.char_indices() {
+        if c == '\n' {
+            break;
+        }
+        used += metrics.advance(c);
+        if used > budget {
+            break;
+        }
+        end = i + c.len_utf8();
+    }
+    text[..end].trim_end()
 }
 
 impl<T: Clone, F: Font> Clone for Text<'_, T, F> {
@@ -61,6 +85,7 @@ impl<T: Clone, F: Font> Clone for Text<'_, T, F> {
             attributes: self.attributes.clone(),
             alignment: self.alignment,
             max_lines: self.max_lines,
+            truncated: self.truncated,
             wrap: self.wrap,
         }
     }
@@ -106,9 +131,23 @@ impl<C: Copy, T: AsRef<str> + Clone, F: FontRender<C>> Render<C> for Text<'_, T,
             WrapStrategy::Character => character_wrap.next(),
         });
         let clip_rect = render_target.clip_rect();
+        let text = self.text.as_ref();
 
-        for line in wrap.into_iter().take(self.max_lines as usize) {
-            let width = line.width;
+        for (index, line) in wrap.into_iter().take(self.max_lines as usize).enumerate() {
+            // The last line of truncated text is the rest of the text, cut to
+            // fit with an ellipsis after it.
+            let ellipsis = self.truncated && index + 1 == self.max_lines as usize;
+            let (content, width) = if ellipsis {
+                let start = (line.content.as_ptr() as usize)
+                    .saturating_sub(text.as_ptr() as usize)
+                    .min(text.len());
+                let prefix = truncated_prefix(&text[start..], size.width, &metrics);
+                let width = prefix.chars().map(|c| metrics.advance(c)).sum::<u32>()
+                    + metrics.advance(ELLIPSIS);
+                (prefix, width)
+            } else {
+                (line.content, line.width)
+            };
 
             let line_x = self.alignment.align(size.width as i32, width as i32) + self.origin.x;
             let mut x = 0;
@@ -127,14 +166,17 @@ impl<C: Copy, T: AsRef<str> + Clone, F: FontRender<C>> Render<C> for Text<'_, T,
                 render_target.draw_glyphs(
                     line_offset,
                     &brush,
-                    line.content.chars().map(|c| {
-                        let glyph = Glyph {
-                            character: c,
-                            offset: Point::new(x, 0),
-                        };
-                        x += metrics.advance(glyph.character) as i32;
-                        glyph
-                    }),
+                    content
+                        .chars()
+                        .chain(ellipsis.then_some(ELLIPSIS))
+                        .map(|c| {
+                            let glyph = Glyph {
+                                character: c,
+                                offset: Point::new(x, 0),
+                            };
+                            x += metrics.advance(glyph.character) as i32;
+                            glyph
+                        }),
                     self.font,
                     &self.attributes,
                     &line_bounding_box,
@@ -171,6 +213,7 @@ impl<C: Copy, T: AsRef<str> + Clone, F: FontRender<C>> Render<C> for Text<'_, T,
             attributes,
             alignment: target.alignment,
             max_lines: target.max_lines,
+            truncated: target.truncated,
             wrap: target.wrap,
         }
         .render(render_target, style);

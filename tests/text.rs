@@ -259,3 +259,57 @@ fn text_handles_touch_only_when_started_inside() {
         "moved touch inside text should defer"
     );
 }
+
+#[test]
+fn line_limit_truncates_with_an_ellipsis() {
+    let font = CharacterBufferFont {};
+    let mut buffer = FixedTextBuffer::<6, 2>::default();
+    let text = Text::new("This is a lengthy text here", &font)
+        .with_line_limit(1)
+        .foreground_color(' ');
+    make_render_tree(&text, buffer.size(), &mut ()).render(&mut buffer, &' ');
+    assert_eq!(buffer.text[0].iter().collect::<String>(), "This… ");
+    assert_eq!(buffer.text[1].iter().collect::<String>(), "      ");
+}
+
+#[test]
+fn line_limit_truncates_the_last_allowed_line() {
+    let font = CharacterBufferFont {};
+    let mut buffer = FixedTextBuffer::<6, 3>::default();
+    let text = Text::new("This is a lengthy text here", &font)
+        .with_line_limit(2)
+        .foreground_color(' ');
+    make_render_tree(&text, buffer.size(), &mut ()).render(&mut buffer, &' ');
+    assert_eq!(buffer.text[0].iter().collect::<String>(), "This  ");
+    assert_eq!(buffer.text[1].iter().collect::<String>(), "is a… ");
+    assert_eq!(buffer.text[2].iter().collect::<String>(), "      ");
+}
+
+#[test]
+fn line_limit_leaves_text_that_fits_alone() {
+    let font = CharacterBufferFont {};
+    let mut buffer = FixedTextBuffer::<6, 1>::default();
+    let text = Text::new("Hi", &font)
+        .with_line_limit(1)
+        .foreground_color(' ');
+    make_render_tree(&text, buffer.size(), &mut ()).render(&mut buffer, &' ');
+    assert_eq!(buffer.text[0].iter().collect::<String>(), "Hi    ");
+}
+
+#[test]
+fn truncated_text_claims_the_offered_width() {
+    let font = CharacterBufferFont {};
+    let text = Text::new("This is a lengthy text here", &font).with_line_limit(1);
+    let env = DefaultEnvironment::non_animated();
+    let layout = text.layout(&Size::new(6, 5).into(), &env, &mut (), &mut ());
+    assert_eq!(layout.resolved_size, Dimensions::new(6, 1));
+}
+
+#[test]
+fn text_offered_less_than_a_line_still_draws_one() {
+    let font = CharacterBufferFont {};
+    let text = Text::new("Hi", &font);
+    let env = DefaultEnvironment::non_animated();
+    let layout = text.layout(&Size::new(6, 0).into(), &env, &mut (), &mut ());
+    assert_eq!(layout.resolved_size, Dimensions::new(2, 1));
+}

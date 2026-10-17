@@ -52,6 +52,7 @@ pub struct Text<'a, T, F: Font> {
     pub(crate) alignment: HorizontalTextAlignment,
     pub(crate) precise_character_bounds: bool,
     pub(crate) wrap: WrapStrategy,
+    pub(crate) line_limit: Option<u16>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -68,6 +69,8 @@ pub struct Sublayout {
     manual_offset: (i16, i16),
     wrap_size: (u16, u16),
     line_count: u16,
+    /// More text follows the last line drawn.
+    truncated: bool,
 }
 
 /// The alignment of multiline text. This has no effect on single-line text.
@@ -103,6 +106,7 @@ impl<'a, T: AsRef<str>, F: Font> Text<'a, T, F> {
             alignment: HorizontalTextAlignment::default(),
             precise_character_bounds: false,
             wrap: WrapStrategy::Word,
+            line_limit: None,
         }
     }
 
@@ -110,6 +114,15 @@ impl<'a, T: AsRef<str>, F: Font> Text<'a, T, F> {
     #[must_use]
     pub fn with_wrap_strategy(mut self, strategy: WrapStrategy) -> Self {
         self.wrap = strategy;
+        self
+    }
+
+    /// Draws at most `limit` lines, ending the last in an ellipsis when the
+    /// text does not fit, whether because of this limit or the height
+    /// offered.
+    #[must_use]
+    pub fn with_line_limit(mut self, limit: u16) -> Self {
+        self.line_limit = Some(limit.max(1));
         self
     }
 }
@@ -279,10 +292,14 @@ where
         let metrics = self.font.metrics(&self.attributes);
         let line_height = metrics.vertical_metrics().line_height();
 
+        // At least one line, even when the offer is shorter than a line:
+        // text that does not quite fit overflows its frame rather than
+        // disappearing.
         let max_line_count = match offer.height {
-            ProposedDimension::Exact(h) => h / line_height,
+            ProposedDimension::Exact(h) => (h / line_height.max(1)).max(1),
             _ => u32::MAX,
-        };
+        }
+        .min(self.line_limit.map_or(u32::MAX, u32::from));
 
         let mut size = Size::zero();
 
@@ -333,25 +350,36 @@ where
 
         size.height = line_count * line_height;
 
+        // Taken before probing for more text, which moves the wrapper on.
+        let (first_non_empty, last_non_empty) = match self.wrap {
+            WrapStrategy::Word => (
+                *whitespace.first_non_empty_line(),
+                *whitespace.last_non_empty_line(),
+            ),
+            WrapStrategy::Character => (*word.first_non_empty_line(), *word.last_non_empty_line()),
+        };
+
+        // Under a line limit, text that goes on past the last line drawn is
+        // cut short with an ellipsis, which may run to the full width
+        // offered. Without one, lines that do not fit are dropped.
+        let truncated = self.line_limit.is_some()
+            && match self.wrap {
+                WrapStrategy::Word => whitespace.next().is_some(),
+                WrapStrategy::Character => word.next().is_some(),
+            };
+        if truncated && let ProposedDimension::Exact(w) = offer.width {
+            size.width = w;
+        }
+
         // Calculate vertical extent from first and last non-empty lines
         let mut min_y = 0i32;
         let mut max_y = 0i32;
         let mut has_vertical_extent = false;
 
         if self.precise_character_bounds {
-            let (first_non_empty, last_non_empty) = match self.wrap {
-                WrapStrategy::Word => (
-                    whitespace.first_non_empty_line(),
-                    whitespace.last_non_empty_line(),
-                ),
-                WrapStrategy::Character => {
-                    (word.first_non_empty_line(), word.last_non_empty_line())
-                }
-            };
-
             if let Some((first_line, first_y)) = first_non_empty
                 && let Some((first_min_y, first_max_y)) =
-                    calculate_vertical_extent(&metrics, first_line, *first_y)
+                    calculate_vertical_extent(&metrics, first_line, first_y)
             {
                 min_y = first_min_y;
                 max_y = first_max_y;
@@ -360,7 +388,7 @@ where
 
             if let Some((last_line, last_y)) = last_non_empty
                 && let Some((last_min_y, last_max_y)) =
-                    calculate_vertical_extent(&metrics, last_line, *last_y)
+                    calculate_vertical_extent(&metrics, last_line, last_y)
             {
                 if has_vertical_extent {
                     // Union with first line extent
@@ -394,6 +422,7 @@ where
             manual_offset: (manual_offset.x as i16, manual_offset.y as i16),
             wrap_size: (wrap_size.width as u16, wrap_size.height as u16),
             line_count: line_count as u16,
+            truncated,
         };
 
         ResolvedLayout {
@@ -414,6 +443,7 @@ where
             manual_offset,
             wrap_size,
             line_count,
+            truncated,
         } = &layout;
         render::Text {
             origin: origin + Point::new(manual_offset.0.into(), manual_offset.1.into()),
@@ -423,6 +453,7 @@ where
             attributes: self.attributes.clone(),
             alignment: self.alignment,
             max_lines: *line_count,
+            truncated: *truncated,
             wrap: self.wrap,
         }
     }

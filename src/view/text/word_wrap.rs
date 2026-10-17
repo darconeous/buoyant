@@ -890,6 +890,7 @@ mod tests {
             alignment: crate::view::HorizontalTextAlignment::Leading,
             precise_character_bounds: true,
             wrap: crate::view::WrapStrategy::Word,
+            line_limit: None,
         };
         text.layout(
             &ProposedDimensions::new(5, 5),
@@ -922,6 +923,7 @@ mod tests {
             alignment: crate::view::HorizontalTextAlignment::Leading,
             precise_character_bounds: false,
             wrap: crate::view::WrapStrategy::Word,
+            line_limit: None,
         };
         text.layout(
             &ProposedDimensions::new(5, 5),
