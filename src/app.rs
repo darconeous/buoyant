@@ -319,34 +319,38 @@ where
     ///
     /// Returns whether focus was moved rather than found where it was.
     fn resolve_focus(&mut self) -> bool {
-        let mut moved = false;
-
-        // An open modal takes focus from anything outside it.
-        if self.seek(SeekTarget::Modal).is_found() {
-            self.move_focus(SeekTarget::Modal);
-            moved = true;
-        } else if !self.focus_forward_group(self.focus_group).is_handled() {
-            // Reobtain focus in the group that holds it. When the path it was
-            // on leads nowhere now, as when a focused list emptied, search
-            // again from the start, so focus returns when content does.
-            self.focus_tree = DefaultFocus::default_first();
-            _ = self.focus_forward_group(self.focus_group);
-        }
-
-        // A request for what is already focused changes nothing, and one that
-        // cannot be met leaves focus where it is.
         let request = match self.focus_binding {
             Some(binding) => binding(&mut self.state).take_request(),
             None => self.focus_request.take(),
         };
+
+        // An open modal takes focus from anything outside it.
+        let captured = self.seek(SeekTarget::Modal).is_found();
+        if captured {
+            self.move_focus(SeekTarget::Modal);
+        }
+
+        // A request that can be met moves focus straight to its target, so
+        // nothing on the way, such as a scroll view following focus, sees
+        // focus land anywhere else first. A request for what is already
+        // focused changes nothing, and one that cannot be met leaves focus
+        // where it is.
         if let Some(key) = request
             && Some(key) != self.focused_key
             && self.seek(SeekTarget::Key(key)).is_found()
         {
             self.move_focus(SeekTarget::Key(key));
-            moved = true;
+            return true;
         }
-        moved
+
+        // Reobtain focus in the group that holds it. When the path it was on
+        // leads nowhere now, as when a focused list emptied, search again
+        // from the start, so focus returns when content does.
+        if !captured && !self.focus_forward_group(self.focus_group).is_handled() {
+            self.focus_tree = DefaultFocus::default_first();
+            _ = self.focus_forward_group(self.focus_group);
+        }
+        captured
     }
 
     /// Looks for `target` in the laid-out view.

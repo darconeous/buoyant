@@ -433,3 +433,46 @@ fn a_jump_into_a_scroll_view_brings_the_target_into_view() {
     let (top, bottom) = span(app.focus_shape());
     assert!(top >= 0 && bottom <= 100, "row 6 spans {top}..{bottom}");
 }
+
+fn pinned_history(state: &State) -> impl View<(), State> + use<> {
+    match_view!(state.second_screen, {
+        false => Button::new(|_: &mut State| {}, |_| Circle)
+            .frame_sized(20, 20)
+            .focus_key(key(8)),
+        true => VStack::new((
+            ScrollView::new(
+                ForEach::<8>::new_vertical(&ROWS[..5], |_| {
+                    Button::new(|_: &mut State| {}, |_| Rectangle).frame_sized(50, 40)
+                })
+                .keyed(|&row| key(row)),
+            )
+            .with_bar_visibility(ScrollBarVisibility::Never)
+            .with_initial_pin_to_end(true)
+            .frame_sized(50, 100),
+            Button::new(|_: &mut State| {}, |_| Circle)
+                .frame_sized(50, 20)
+                .focus_key(key(9)),
+        )),
+    })
+}
+
+#[test]
+fn a_met_request_does_not_pass_through_the_screen_first() {
+    let mut app = App::new(State::default(), Size::new(50, 120), pinned_history)
+        .with_roles(Role::Button)
+        .with_focus_binding(bind);
+    app.focus(key(8));
+
+    // A new screen opens with focus requested below its history, which
+    // must stay pinned to its end rather than follow focus to its top.
+    {
+        let mut state = app.state_mut();
+        state.second_screen = true;
+        state.focus.request(key(9));
+    }
+    app.finalize_view();
+    assert_eq!(app.focused_key(), Some(key(9)));
+    app.tap(Point::new(25, 90));
+    app.finalize_view();
+    assert_eq!(app.focused_key(), Some(key(4)));
+}
