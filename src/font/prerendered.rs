@@ -77,7 +77,7 @@ impl Face {
             .get((index / 2) as usize)
             .copied()
             .unwrap_or(0);
-        if index % 2 == 0 {
+        if index.is_multiple_of(2) {
             byte >> 4
         } else {
             byte & 0x0f

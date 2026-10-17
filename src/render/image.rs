@@ -134,10 +134,10 @@ mod embedded_graphics {
         }
 
         fn shade(&self, gray: C) -> Option<T::Color> {
-            match &self.shades {
-                Some(shades) => shades[usize::from(gray.luma()) & 15],
-                None => Self::template_color(gray, self.background_color, self.color),
-            }
+            self.shades.as_ref().map_or_else(
+                || Self::template_color(gray, self.background_color, self.color),
+                |shades| shades[usize::from(gray.luma()) & 15],
+            )
         }
 
         fn template_color(
@@ -175,11 +175,13 @@ mod embedded_graphics {
             let shades = self.shades;
             let (background_color, color) = (self.background_color, self.color);
             let pixels = pixels.into_iter().filter_map(|p| {
-                match &shades {
-                    Some(shades) => shades[usize::from(p.1.luma()) & 15],
-                    None => Self::template_color(p.1, background_color, color),
-                }
-                .map(|color| Pixel(p.0, color))
+                shades
+                    .as_ref()
+                    .map_or_else(
+                        || Self::template_color(p.1, background_color, color),
+                        |shades| shades[usize::from(p.1.luma()) & 15],
+                    )
+                    .map(|color| Pixel(p.0, color))
             });
             self.target.draw_iter(pixels)
         }

@@ -282,6 +282,7 @@ where
 
     fn build_state(&self, _captures: &mut Captures) -> Self::State {}
 
+    #[expect(clippy::too_many_lines)]
     fn layout(
         &self,
         offer: &ProposedDimensions,
