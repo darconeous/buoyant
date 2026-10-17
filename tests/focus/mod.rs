@@ -15,6 +15,7 @@ mod modifier {
 mod view {
     mod button;
     mod foreach;
+    mod foreach_keyed;
     mod geometry_reader;
     mod hstack;
     mod match_view;

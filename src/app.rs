@@ -246,8 +246,13 @@ where
             &mut self.view_state,
         );
 
-        // Reobtain focus after rebuild, in the group that holds it.
-        _ = self.focus_forward_group(self.focus_group);
+        // Reobtain focus after rebuild, in the group that holds it. When the
+        // path it was on leads nowhere now, as when a focused list emptied,
+        // search again from the start, so focus returns when content does.
+        if !self.focus_forward_group(self.focus_group).is_handled() {
+            self.focus_tree = DefaultFocus::default_first();
+            _ = self.focus_forward_group(self.focus_group);
+        }
 
         self.requires_rebuild = false;
         self.requires_redraw = true;

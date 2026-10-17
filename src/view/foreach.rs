@@ -7,7 +7,7 @@ use embedded_touch::Touch;
 use crate::{
     environment::LayoutEnvironment,
     event::{EventContext, EventResult, TouchResult},
-    focus::DefaultFocus,
+    focus::{DefaultFocus, FocusKey},
     layout::{HorizontalAlignment, LayoutDirection, ResolvedLayout, VerticalAlignment},
     primitives::{Dimension, Dimensions, Point, ProposedDimension, ProposedDimensions},
     transition::Opacity,
@@ -45,7 +45,7 @@ pub struct ForEach<const N: usize> {}
 /// Prefer using `ForEach::new` to avoid needing to specify
 /// type parameters.
 #[derive(Debug, Clone)]
-pub struct ForEachView<'a, const N: usize, I, V, F, D = Vertical>
+pub struct ForEachView<'a, const N: usize, I, V, F, D = Vertical, K = Positional>
 where
     F: Fn(&'a I) -> V,
 {
@@ -53,6 +53,34 @@ where
     build_view: F,
     direction_with_alignment: D,
     spacing: u32,
+    keys: K,
+}
+
+/// How a [`ForEach`] tells its items apart.
+pub trait ItemKeys<I> {
+    /// The item's key, or `None` when items are told apart by position.
+    fn key(&self, item: &I) -> Option<FocusKey>;
+}
+
+/// Items are told apart by their position: focus and each item's state stay
+/// at an index when the items change.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Positional;
+
+impl<I> ItemKeys<I> for Positional {
+    fn key(&self, _item: &I) -> Option<FocusKey> {
+        None
+    }
+}
+
+/// Items are told apart by a key. See [`ForEachView::keyed`].
+#[derive(Debug, Clone, Copy)]
+pub struct Keyed<K>(K);
+
+impl<I, K: Fn(&I) -> FocusKey> ItemKeys<I> for Keyed<K> {
+    fn key(&self, item: &I) -> Option<FocusKey> {
+        Some((self.0)(item))
+    }
 }
 
 /// Specifies a vertical direction for `ForEach`. Used in [`ForEachView::with_direction`].
@@ -151,6 +179,7 @@ impl<const N: usize> ForEach<N> {
             build_view,
             direction_with_alignment: Vertical::default(),
             spacing: 0,
+            keys: Positional,
         }
     }
 
@@ -167,11 +196,12 @@ impl<const N: usize> ForEach<N> {
             build_view,
             direction_with_alignment: Horizontal::default(),
             spacing: 0,
+            keys: Positional,
         }
     }
 }
 
-impl<'a, const N: usize, I, V, F> ForEachView<'a, N, I, V, F, Vertical>
+impl<'a, const N: usize, I, V, F, K> ForEachView<'a, N, I, V, F, Vertical, K>
 where
     F: Fn(&'a I) -> V,
 {
@@ -179,15 +209,13 @@ where
     #[must_use]
     pub fn with_alignment(self, alignment: HorizontalAlignment) -> Self {
         ForEachView {
-            items: self.items,
-            build_view: self.build_view,
             direction_with_alignment: Vertical(alignment),
-            spacing: self.spacing,
+            ..self
         }
     }
 }
 
-impl<'a, const N: usize, I, V, F> ForEachView<'a, N, I, V, F, Horizontal>
+impl<'a, const N: usize, I, V, F, K> ForEachView<'a, N, I, V, F, Horizontal, K>
 where
     F: Fn(&'a I) -> V,
 {
@@ -195,22 +223,20 @@ where
     #[must_use]
     pub fn with_alignment(self, alignment: VerticalAlignment) -> Self {
         ForEachView {
-            items: self.items,
-            build_view: self.build_view,
             direction_with_alignment: Horizontal(alignment),
-            spacing: self.spacing,
+            ..self
         }
     }
 }
 
-impl<'a, const N: usize, I, V, F, D> ForEachView<'a, N, I, V, F, D>
+impl<'a, const N: usize, I, V, F, D, K> ForEachView<'a, N, I, V, F, D, K>
 where
     D: ForEachDirection,
     F: Fn(&'a I) -> V,
 {
     /// Sets an direction and alignment strategy for when child views vary in size
     #[must_use]
-    pub fn with_direction<D2>(self, direction: D2) -> ForEachView<'a, N, I, V, F, D2>
+    pub fn with_direction<D2>(self, direction: D2) -> ForEachView<'a, N, I, V, F, D2, K>
     where
         D2: ForEachDirection, // const shinenigans
     {
@@ -219,6 +245,30 @@ where
             build_view: self.build_view,
             direction_with_alignment: direction,
             spacing: self.spacing,
+            keys: self.keys,
+        }
+    }
+
+    /// Tells the items apart by `key`, rather than by their position.
+    ///
+    /// Focus and each item's state then follow the item: a focused item
+    /// that moves stays focused, and its view keeps its state, such as a
+    /// control being edited. When the focused item is removed, focus moves
+    /// to the item now nearest its place. Results that focus an item carry
+    /// its key, unless an element within the item names itself.
+    ///
+    /// Keys must be unique among the items.
+    #[must_use]
+    pub fn keyed<K2>(self, key: K2) -> ForEachView<'a, N, I, V, F, D, Keyed<K2>>
+    where
+        K2: Fn(&I) -> FocusKey,
+    {
+        ForEachView {
+            items: self.items,
+            build_view: self.build_view,
+            direction_with_alignment: self.direction_with_alignment,
+            spacing: self.spacing,
+            keys: Keyed(key),
         }
     }
 
@@ -230,7 +280,7 @@ where
     }
 }
 
-impl<'a, const N: usize, I, V, F, D> ViewMarker for ForEachView<'a, N, I, V, F, D>
+impl<'a, const N: usize, I, V, F, D, K> ViewMarker for ForEachView<'a, N, I, V, F, D, K>
 where
     F: Fn(&'a I) -> V,
     V: ViewMarker,
@@ -239,9 +289,12 @@ where
     type Transition = Opacity;
 }
 
+/// Which item of a [`ForEach`] holds focus, and the focus within it.
 #[derive(Debug, Clone)]
 pub struct Focus<T: DefaultFocus> {
     index: usize,
+    /// The focused item's key, which finds it again when the items change.
+    key: Option<FocusKey>,
     tree: T,
 }
 
@@ -249,6 +302,7 @@ impl<T: DefaultFocus> DefaultFocus for Focus<T> {
     fn default_first() -> Self {
         Self {
             index: 0,
+            key: None,
             tree: T::default_first(),
         }
     }
@@ -258,6 +312,7 @@ impl<T: DefaultFocus> DefaultFocus for Focus<T> {
         // so we use usize::MAX as a sentinel to indicate "last"
         Self {
             index: usize::MAX,
+            key: None,
             tree: T::default_last(),
         }
     }
@@ -269,15 +324,106 @@ impl<T: DefaultFocus> Default for Focus<T> {
     }
 }
 
-impl<'a, const N: usize, I, V, F, Captures: ?Sized, D: ForEachDirection> ViewLayout<Captures>
-    for ForEachView<'a, N, I, V, F, D>
+/// The state of each item's view, with the key it belongs to.
+#[derive(Debug, Clone)]
+pub struct ForEachState<S, const N: usize> {
+    keys: heapless::Vec<Option<FocusKey>, N>,
+    items: heapless::Vec<S, N>,
+}
+
+impl<'a, const N: usize, I, V, F, D, K> ForEachView<'a, N, I, V, F, D, K>
+where
+    F: Fn(&'a I) -> V,
+    K: ItemKeys<I>,
+{
+    fn key_at(&self, index: usize) -> Option<FocusKey> {
+        self.items.get(index).and_then(|item| self.keys.key(item))
+    }
+
+    /// Finds the focused item again after the items changed.
+    ///
+    /// A keyed item is found by its key. When it is gone, focus stays at its
+    /// index, clamped to the items that remain, on a fresh focus tree.
+    fn resolve_focus<T: DefaultFocus>(&self, focus: &mut Focus<T>) {
+        let Some(key) = focus.key else {
+            return;
+        };
+        if self.key_at(focus.index) == Some(key) {
+            return;
+        }
+        if let Some(index) = self
+            .items
+            .iter()
+            .position(|item| self.keys.key(item) == Some(key))
+        {
+            focus.index = index;
+        } else {
+            focus.index = focus.index.min(self.items.len().saturating_sub(1));
+            focus.key = None;
+            focus.tree = T::default_first();
+        }
+    }
+
+    /// Matches each item's view state to its item, by key or by position.
+    fn reconcile<Captures: ?Sized>(
+        &self,
+        captures: &mut Captures,
+        state: &mut ForEachState<V::State, N>,
+    ) where
+        V: ViewLayout<Captures>,
+    {
+        let unchanged = state.keys.len() == self.items.len().min(N)
+            && self
+                .items
+                .iter()
+                .zip(&state.keys)
+                .all(|(item, key)| self.keys.key(item) == *key);
+        if unchanged {
+            return;
+        }
+        let count = self.items.len().min(N);
+        let positional = self
+            .items
+            .first()
+            .is_none_or(|item| self.keys.key(item).is_none());
+        if positional {
+            // Each index keeps its state; only the end of the list changes.
+            state.keys.truncate(count);
+            state.items.truncate(count);
+            for item in &self.items[state.items.len()..count] {
+                _ = state.keys.push(None);
+                _ = state
+                    .items
+                    .push((self.build_view)(item).build_state(captures));
+            }
+            return;
+        }
+        let mut keys = core::mem::take(&mut state.keys);
+        let mut items = core::mem::take(&mut state.items);
+        for item in &self.items[..count] {
+            let key = self.keys.key(item);
+            let item_state = keys.iter().position(|k| *k == key).map_or_else(
+                || (self.build_view)(item).build_state(captures),
+                |previous| {
+                    keys.swap_remove(previous);
+                    items.swap_remove(previous)
+                },
+            );
+            _ = state.keys.push(key);
+            _ = state.items.push(item_state);
+        }
+    }
+}
+
+impl<'a, const N: usize, I, V, F, Captures: ?Sized, D: ForEachDirection, K: ItemKeys<I>>
+    ViewLayout<Captures> for ForEachView<'a, N, I, V, F, D, K>
 where
     V: ViewLayout<Captures>,
     V::FocusTree: DefaultFocus,
     F: Fn(&'a I) -> V,
 {
     type Sublayout = ResolvedLayout<heapless::Vec<ResolvedLayout<V::Sublayout>, N>>;
-    type State = heapless::Vec<V::State, N>;
+    type State = ForEachState<V::State, N>;
     type FocusTree = Focus<V::FocusTree>;
 
     fn transition(&self) -> Self::Transition {
@@ -285,10 +431,14 @@ where
     }
 
     fn build_state(&self, captures: &mut Captures) -> Self::State {
-        let mut state = heapless::Vec::new();
+        let mut state = ForEachState {
+            keys: heapless::Vec::new(),
+            items: heapless::Vec::new(),
+        };
         for item in self.items {
             let view = (self.build_view)(item);
-            _ = state.push(view.build_state(captures));
+            _ = state.keys.push(self.keys.key(item));
+            _ = state.items.push(view.build_state(captures));
         }
         state
     }
@@ -302,6 +452,8 @@ where
         captures: &mut Captures,
         state: &mut Self::State,
     ) -> ResolvedLayout<Self::Sublayout> {
+        self.reconcile(captures, state);
+        let state = &mut state.items;
         let env = &ForEachEnvironment::new(env, self.direction_with_alignment);
         let mut sublayouts: heapless::Vec<ResolvedLayout<V::Sublayout>, N> = heapless::Vec::new();
         let mut subview_stages: heapless::Vec<(i8, bool), N> = heapless::Vec::new();
@@ -363,7 +515,11 @@ where
         let mut accumulated_size = 0;
         let mut renderables = heapless::Vec::new();
 
-        for ((item_layout, item), item_state) in layout.sublayouts.iter().zip(self.items).zip(state)
+        for ((item_layout, item), item_state) in layout
+            .sublayouts
+            .iter()
+            .zip(self.items)
+            .zip(&mut state.items)
         {
             let aligned_origin = self.direction_with_alignment.align(
                 accumulated_size,
@@ -407,6 +563,11 @@ where
         use crate::event::Event;
         use crate::focus::{FocusAction, FocusDirection};
 
+        let state = &mut state.items;
+        // Only as many items as were laid out can take events.
+        let len = self.items.len().min(state.len()).min(render_tree.len());
+        self.resolve_focus(focus);
+
         // Handle focus events specially - they need to route through the focus tree
         if let Event::Focus {
             action: focus_event,
@@ -416,10 +577,10 @@ where
             // Get the current focused index, resolving the usize::MAX sentinel to the actual last index
             let mut current = if focus.index == usize::MAX {
                 // Sentinel for "last" - resolve to actual last index
-                if self.items.is_empty() {
+                if len == 0 {
                     return EventResult::Deferred;
                 }
-                let last_index = self.items.len() - 1;
+                let last_index = len - 1;
                 focus.index = last_index;
                 last_index
             } else {
@@ -432,9 +593,10 @@ where
 
             loop {
                 // Ensure current index is valid
-                if current >= self.items.len() {
+                if current >= len {
                     return EventResult::Deferred;
                 }
+                focus.key = self.key_at(current);
 
                 // Try focus on the current child
                 let item = &self.items[current];
@@ -458,7 +620,10 @@ where
                 if !matches!(child_result, EventResult::Deferred)
                     || *focus_event == FocusAction::Teardown
                 {
-                    return child_result;
+                    return match focus.key {
+                        Some(key) => child_result.with_key(key),
+                        None => child_result,
+                    };
                 }
 
                 // Child is exhausted, try to move based on action
@@ -471,7 +636,7 @@ where
                     | FocusAction::Next => {
                         // Advance to next child
                         current += 1;
-                        if current >= self.items.len() {
+                        if current >= len {
                             return EventResult::Deferred;
                         }
                         focus.index = current;
@@ -497,10 +662,7 @@ where
         // Key events route only to the currently focused child, not via DFS
         if matches!(event, Event::KeyDown(_) | Event::KeyUp(_)) {
             // Unresolved "last" sentinel - no focused child yet
-            if focus.index == usize::MAX {
-                return EventResult::Deferred;
-            }
-            if focus.index >= self.items.len() {
+            if focus.index >= len {
                 return EventResult::Deferred;
             }
             let item = &self.items[focus.index];
@@ -516,12 +678,13 @@ where
         }
 
         // For non-focus events (touch, scroll, etc.), use DFS approach
-        for (i, item) in self.items.iter().enumerate() {
+        for (i, item) in self.items.iter().take(len).enumerate() {
             let view = (self.build_view)(item);
             let item_state = &mut state[i];
             let item_render_tree = &mut render_tree[i];
             focus.tree = DefaultFocus::default_first();
             focus.index = i;
+            focus.key = self.keys.key(item);
             let child_result = view.handle_event(
                 event,
                 context,
@@ -545,13 +708,21 @@ where
         captures: &mut Captures,
         state: &mut Self::State,
     ) -> TouchResult<Self::FocusTree> {
-        for (i, item) in self.items.iter().enumerate() {
+        let state = &mut state.items;
+        for ((i, item), (item_state, item_render_tree)) in self
+            .items
+            .iter()
+            .enumerate()
+            .zip(state.iter_mut().zip(render_tree.iter_mut()))
+        {
             let view = (self.build_view)(item);
-            let item_state = &mut state[i];
-            let item_render_tree = &mut render_tree[i];
             match view.handle_touch(touch, context, item_render_tree, captures, item_state) {
                 TouchResult::Focused(f) => {
-                    return TouchResult::Focused(Focus { index: i, tree: f });
+                    return TouchResult::Focused(Focus {
+                        index: i,
+                        key: self.keys.key(item),
+                        tree: f,
+                    });
                 }
                 TouchResult::Handled => return TouchResult::Handled,
                 TouchResult::Deferred => {}
