@@ -421,6 +421,7 @@ fn a_jump_into_a_scroll_view_brings_the_target_into_view() {
     app.focus(key(0));
 
     app.focus(key(7));
+    assert_eq!(app.focused_key(), Some(key(7)));
     let (top, bottom) = span(app.focus_shape());
     assert!(top >= 0 && bottom <= 100, "row 7 spans {top}..{bottom}");
 
@@ -428,6 +429,7 @@ fn a_jump_into_a_scroll_view_brings_the_target_into_view() {
     assert!(!app.send(Event::Scroll(Point::new(0, 400))).is_handled());
     app.finalize_view();
     app.focus(key(6));
+    assert_eq!(app.focused_key(), Some(key(6)));
     let (top, bottom) = span(app.focus_shape());
     assert!(top >= 0 && bottom <= 100, "row 6 spans {top}..{bottom}");
 }

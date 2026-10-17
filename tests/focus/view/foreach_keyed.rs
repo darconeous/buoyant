@@ -146,3 +146,13 @@ fn focus_returns_when_an_emptied_list_fills_again() {
     app.finalize_view();
     assert_eq!(app.focused_key(), Some(FocusKey(40)));
 }
+
+#[test]
+fn an_item_is_found_by_its_key() {
+    let mut app =
+        App::new(with_items(&[10, 20, 30]), Size::new(100, 100), buttons).with_roles(Role::Button);
+    app.focus(FocusKey(30));
+    assert_eq!(app.focused_key(), Some(FocusKey(30)));
+    app.focus(FocusKey(20));
+    assert_eq!(app.focused_key(), Some(FocusKey(20)));
+}

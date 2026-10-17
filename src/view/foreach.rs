@@ -7,7 +7,7 @@ use embedded_touch::Touch;
 use crate::{
     environment::LayoutEnvironment,
     event::{EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusKey, Seek, SeekResult},
+    focus::{DefaultFocus, FocusKey, Seek, SeekResult, SeekTarget},
     layout::{HorizontalAlignment, LayoutDirection, ResolvedLayout, VerticalAlignment},
     primitives::{Dimension, Dimensions, Point, ProposedDimension, ProposedDimensions},
     transition::Opacity,
@@ -728,13 +728,20 @@ where
         let mut result = SeekResult::Absent;
         for (index, item) in self.items[..len].iter().enumerate() {
             let item_focus = on_path.and_then(|(i, tree)| (i == index).then_some(tree));
+            let key = self.keys.key(item);
+            // Asking for an item's key asks for the item.
+            let item_seek = match seek.target {
+                SeekTarget::Key(target) if key == Some(target) => seek.with_target(SeekTarget::Any),
+                _ => *seek,
+            };
             let found = (self.build_view)(item)
-                .seek(seek, &render_tree[index], &state.items[index], item_focus)
-                .map(|tree| Focus {
-                    index,
-                    key: self.keys.key(item),
-                    tree,
-                });
+                .seek(
+                    &item_seek,
+                    &render_tree[index],
+                    &state.items[index],
+                    item_focus,
+                )
+                .map(|tree| Focus { index, key, tree });
             result = result.or(found);
         }
         result
