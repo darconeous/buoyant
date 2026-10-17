@@ -29,6 +29,7 @@ mod scroll_renderable;
 mod shade_subtree;
 pub mod shape;
 pub mod text;
+pub mod text_field;
 mod transform;
 mod transition_option;
 
@@ -49,6 +50,7 @@ pub use shape::Rect;
 pub use shape::RoundedRect;
 pub use shape::StrokedShape;
 pub use text::Text;
+pub use text_field::TextField;
 pub use transform::Transform;
 pub use transition_option::TransitionOption;
 

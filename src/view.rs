@@ -22,6 +22,7 @@ pub mod scroll_view;
 pub mod shape;
 mod spacer;
 mod text;
+pub mod text_field;
 mod view_that_fits;
 mod vstack;
 mod zstack;
@@ -48,6 +49,7 @@ pub use scroll_view::ScrollView;
 pub use spacer::Spacer;
 pub(crate) use text::{CharacterWrap, WordWrap};
 pub use text::{HorizontalTextAlignment, Text, WrapStrategy};
+pub use text_field::{EditBuffer, TextField};
 pub use view_that_fits::{FitAxis, ViewThatFits};
 pub use vstack::VStack;
 pub use zstack::ZStack;
@@ -60,7 +62,8 @@ pub mod prelude {
     pub use super::{AsDrawable, Image};
     pub use super::{
         Button, ButtonState, Divider, EmptyView, ForEach, GeometryReader, HStack, Lens, Paginate,
-        Rotary, ScrollView, Spacer, Text, VStack, View, ViewLayout, ViewThatFits, ZStack,
+        Rotary, ScrollView, Spacer, Text, TextField, VStack, View, ViewLayout, ViewThatFits,
+        ZStack,
     };
     pub use super::{FitAxis, HorizontalTextAlignment, padding::Edges};
     pub use crate::animation::Animation;

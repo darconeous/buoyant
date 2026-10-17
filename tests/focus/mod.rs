@@ -24,6 +24,7 @@ mod view {
     mod option;
     mod paginate;
     mod rotary;
+    mod text_field;
     mod view_that_fits;
     mod view_that_fits_state;
     mod vstack;
