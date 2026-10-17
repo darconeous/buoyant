@@ -157,6 +157,23 @@ fn the_cursor_moves_across_a_break() {
 }
 
 #[test]
+fn backspace_with_nothing_to_erase_ends_the_edit() {
+    let mut app = app("a", 5, one_field);
+    assert!(app.select().is_handled());
+    assert!(app.key_down(Key::Backspace).is_handled());
+    app.finalize_view();
+    assert_eq!(shown(&app).1, Some(caret(0, 0)));
+
+    // Empty, Backspace ends the edit; the field keeps focus, and the next
+    // Backspace is offered further up.
+    assert!(app.key_down(Key::Backspace).is_handled());
+    app.finalize_view();
+    assert_eq!(shown(&app).1, None);
+    assert_ne!(app.focus_shape(), &buoyant::render::ContentShape::Empty);
+    assert!(!app.key_down(Key::Backspace).is_handled());
+}
+
+#[test]
 fn a_full_field_refuses_input() {
     let mut app = app("abcdefghijklmnop", 20, one_field);
     assert!(app.key_down(Key::Character('q')).is_handled());
@@ -174,6 +191,11 @@ fn enter_starts_editing_then_submits() {
     app.finalize_view();
     assert_eq!(app.state().sent, ["hi"]);
     assert!(app.state().drafts[0].is_empty());
+
+    // Submitting ends the edit: turning moves focus on, and Backspace is
+    // offered further up.
+    assert_eq!(shown(&app).1, None);
+    assert!(!app.key_down(Key::Backspace).is_handled());
 }
 
 #[test]

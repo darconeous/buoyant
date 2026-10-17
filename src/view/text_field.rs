@@ -293,7 +293,8 @@ impl TextFieldStatus {
 /// focused it is inactive, with no cursor shown: Backspace is offered
 /// further up, and a character, Enter or a press activates it, a character
 /// also being inserted. Active, it holds focus: turning moves the cursor,
-/// Backspace erases, Enter submits, and a press or blur makes it inactive.
+/// Backspace erases, and Enter submits; submitting, a press, a blur, or
+/// Backspace with no text makes it inactive.
 ///
 /// Whether the field is active is its own state, so it lasts while the
 /// field is shown and is forgotten when it is not; the text is the
@@ -624,7 +625,9 @@ impl<const N: usize, F: Font, L, S, ViewFn> TextField<'_, N, F, L, S, ViewFn> {
             }
         }
         if key == Key::Enter {
+            // Submitting ends the edit.
             return if self.on_submit.on_submit(captures) {
+                status.active = false;
                 context.request_view_rebuild();
                 EventResult::handled_unfocused()
             } else {
@@ -634,6 +637,12 @@ impl<const N: usize, F: Font, L, S, ViewFn> TextField<'_, N, F, L, S, ViewFn> {
         let Some(buffer) = (self.lens)(captures) else {
             return EventResult::Deferred;
         };
+        if key == Key::Backspace && buffer.is_empty() {
+            // Nothing to erase ends the edit.
+            status.active = false;
+            context.request_view_rebuild();
+            return EventResult::handled_unfocused();
+        }
         match key {
             Key::Character(c) => _ = buffer.insert(c),
             Key::Backspace => _ = buffer.erase_back(),
