@@ -62,6 +62,8 @@ where
     focus_binding: Option<fn(&mut S) -> &mut FocusState>,
     /// A request made with [`focus`](Self::focus) without a binding.
     focus_request: Option<FocusKey>,
+    /// A redirected key is being delivered.
+    redirecting: bool,
     roles: RoleSet,
     size: Size,
     elapsed: Duration,
@@ -139,6 +141,7 @@ where
             focus_group: crate::focus::GROUP_0,
             focus_binding: None,
             focus_request: None,
+            redirecting: false,
             size,
             elapsed: Duration::default(),
             requires_redraw: true,
@@ -387,6 +390,24 @@ where
         }
     }
 
+    /// Settles focus, then delivers `event` to the element a handler
+    /// redirected it to, if focus is there now. Only one redirect is followed,
+    /// so a key cannot loop back to the handler that sent it.
+    fn redirect(&mut self, event: Event) -> Option<EventResult> {
+        let target = match self.focus_binding {
+            Some(binding) => binding(&mut self.state).pending(),
+            None => self.focus_request,
+        }?;
+        self.finalize_view();
+        if self.focused_key != Some(target) {
+            return None;
+        }
+        self.redirecting = true;
+        let result = self.send(event);
+        self.redirecting = false;
+        Some(result)
+    }
+
     /// Whether focus has changed or been requested since it last settled.
     fn focus_unsettled(&mut self) -> bool {
         match self.focus_binding {
@@ -532,6 +553,12 @@ where
         }
         if context.redraw_requested.get() {
             self.requires_redraw = true;
+        }
+        if context.redirect_requested.get()
+            && matches!(event, Event::KeyDown(_))
+            && !self.redirecting
+        {
+            return self.redirect(event).unwrap_or(result);
         }
         result
     }

@@ -224,6 +224,9 @@ pub struct EventContext {
     pub redraw_requested: Cell<bool>,
     /// Whether a view rebuild has been requested.
     pub view_rebuild_requested: Cell<bool>,
+    /// Whether the key being handled should be delivered again once focus
+    /// has moved, as [`KeyResponse::Redirect`] asks.
+    pub redirect_requested: Cell<bool>,
     /// Which roles are currently active.
     pub roles: RoleSet,
 }
@@ -236,6 +239,7 @@ impl EventContext {
             app_time,
             redraw_requested: Cell::new(false),
             view_rebuild_requested: Cell::new(false),
+            redirect_requested: Cell::new(false),
             roles: RoleSet::any(),
         }
     }
@@ -259,6 +263,26 @@ impl EventContext {
     pub fn request_redraw(&self) {
         self.redraw_requested.set(true);
     }
+
+    /// Asks for the key being handled to be delivered again to the element
+    /// focus moves to, as [`KeyResponse::Redirect`] does.
+    pub fn request_redirect(&self) {
+        self.redirect_requested.set(true);
+    }
+}
+
+/// What an [`on_key`](crate::view::ViewModifier::on_key) handler did with a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyResponse {
+    /// The key is not for this handler; it is offered further up.
+    Ignored,
+    /// The key was handled.
+    Handled,
+    /// The handler requested focus elsewhere, and the key belongs there.
+    ///
+    /// Once focus has settled, if it is on the requested element, the same
+    /// key is delivered to it, once. Otherwise the key is dropped.
+    Redirect,
 }
 
 #[cfg(feature = "embedded-graphics-simulator")]

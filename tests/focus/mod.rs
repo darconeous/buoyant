@@ -8,6 +8,7 @@ mod modifier {
     mod focus_touches;
     mod frame;
     mod hidden;
+    mod on_key;
     mod opacity;
     mod overlay;
     mod popover;

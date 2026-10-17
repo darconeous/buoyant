@@ -25,6 +25,7 @@ mod hint_background;
 #[allow(missing_docs)]
 pub mod map_event;
 mod offset;
+mod on_key;
 mod opacity;
 mod overlay;
 #[allow(missing_docs)]
@@ -56,6 +57,7 @@ pub(crate) use geometry_group::GeometryGroup;
 pub(crate) use hidden::Hidden;
 pub(crate) use hint_background::HintBackground;
 pub(crate) use offset::Offset;
+pub(crate) use on_key::OnKey;
 pub(crate) use opacity::Opacity;
 pub(crate) use overlay::OverlayView;
 pub(crate) use padding::Padding;
@@ -67,7 +69,7 @@ pub(crate) use unfocusable::Unfocusable;
 
 use crate::{
     animation::Animation,
-    event::Event,
+    event::{Event, Key, KeyResponse},
     focus::{FocusGroup, FocusKey},
     layout::{Alignment, HorizontalAlignment, VerticalAlignment},
     primitives::{Point, UnitPoint},
@@ -465,6 +467,22 @@ pub trait ViewModifier: Sized + ViewMarker {
     /// [`Button`]: crate::view::Button
     fn focus_key(self, key: FocusKey) -> FocusKeyed<Self> {
         FocusKeyed::new(self, key)
+    }
+
+    /// Handles the keys nothing focused inside this view handled.
+    ///
+    /// The handler runs on key presses only, after the focused element and
+    /// the views between it and this one have deferred the key. It can ask
+    /// for focus to move, through the application's [`FocusState`], and
+    /// return [`KeyResponse::Redirect`] to have the key delivered where focus
+    /// lands.
+    ///
+    /// [`FocusState`]: crate::focus::FocusState
+    fn on_key<C: ?Sized, F>(self, handler: F) -> OnKey<Self, F>
+    where
+        F: Fn(Key, &mut C) -> KeyResponse,
+    {
+        OnKey::new(self, handler)
     }
 
     /// Creates a new coordinate space under which views are positioned relative to a
