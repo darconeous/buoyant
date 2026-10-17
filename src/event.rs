@@ -46,6 +46,18 @@ pub enum Key {
     Backspace,
     /// The delete key.
     Delete,
+    /// The enter or return key.
+    ///
+    /// Distinct from a typed `'\n'`: what it does is up to the view, such as
+    /// sending what a text field holds.
+    Enter,
+    /// A step to the next word, such as from a quickly spun wheel.
+    ///
+    /// A text field moves its cursor by a word; elsewhere it can be taken as
+    /// a larger step through focus.
+    NextWord,
+    /// A step to the previous word. See [`Key::NextWord`].
+    PreviousWord,
 }
 
 impl From<FocusAction> for Event {
@@ -397,7 +409,7 @@ pub mod simulator {
 
                 // Whitespace and control
                 Keycode::TAB | Keycode::KP_TAB => Ok(Self::Character('\t')),
-                Keycode::RETURN | Keycode::KP_ENTER => Ok(Self::Character('\n')),
+                Keycode::RETURN | Keycode::KP_ENTER => Ok(Self::Enter),
                 Keycode::SPACE | Keycode::KP_SPACE => Ok(Self::Character(' ')),
 
                 // Punctuation (combined regular and keypad)

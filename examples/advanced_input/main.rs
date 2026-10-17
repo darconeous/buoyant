@@ -115,7 +115,7 @@ pub fn view<'a, 'b, C: GoodPixelColor, F: Fn(&State) + 'a + Copy>(
             Key::Character('j') | Key::DownArrow => {
                 Mapping::Fallback(FocusAction::Next.into_event(focus::GROUP_0))
             }
-            Key::Character(' ' | '\n') => {
+            Key::Character(' ' | '\n') | Key::Enter => {
                 Mapping::Fallback(FocusAction::Select.into_event(focus::GROUP_0))
             }
             Key::Character('e') | Key::Backspace => {

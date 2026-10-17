@@ -179,7 +179,9 @@ fn root_view(state: &AppState) -> impl View<color::Space, AppState> + use<> {
         Event::KeyDown(key) => match key {
             Key::UpArrow | Key::LeftArrow => Mapping::Fallback(FocusAction::Previous.into()),
             Key::DownArrow | Key::RightArrow => Mapping::Fallback(FocusAction::Next.into()),
-            Key::Character(' ' | '\n') => Mapping::Fallback(FocusAction::Select.into()),
+            Key::Character(' ' | '\n') | Key::Enter => {
+                Mapping::Fallback(FocusAction::Select.into())
+            }
             Key::Backspace | Key::Delete => Mapping::Fallback(FocusAction::Blur.into()),
             _ => Mapping::Passthrough,
         },
