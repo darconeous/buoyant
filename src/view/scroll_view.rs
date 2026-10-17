@@ -125,6 +125,8 @@ pub struct ScrollView<Inner> {
     bar_config: ScrollBarConfig,
     direction: ScrollDirection,
     initial_pin_to_end: bool,
+    focus_margin: u32,
+    short_content_at_end: bool,
 }
 
 impl<Inner: ViewMarker> ScrollView<Inner> {
@@ -136,7 +138,30 @@ impl<Inner: ViewMarker> ScrollView<Inner> {
             bar_config: ScrollBarConfig::default(),
             direction: ScrollDirection::default(),
             initial_pin_to_end: false,
+            focus_margin: 0,
+            short_content_at_end: false,
         }
+    }
+
+    /// Keeps this much of the content beyond the focused element in view
+    /// when scrolling to it, where there is more content.
+    ///
+    /// A margin smaller than the next element shows that element cut by the
+    /// edge, which says the content goes on without a scroll bar.
+    #[must_use]
+    pub fn with_focus_margin(mut self, margin: u32) -> Self {
+        self.focus_margin = margin;
+        self
+    }
+
+    /// Places content shorter than the scroll view at its end along the
+    /// scroll axis (the bottom for vertical scrolling) rather than its start.
+    ///
+    /// Useful for a history that grows toward the end, such as a chat.
+    #[must_use]
+    pub fn with_short_content_at_end(mut self, at_end: bool) -> Self {
+        self.short_content_at_end = at_end;
+        self
     }
 
     /// Sets the axes along which the scroll view can scroll.
@@ -240,6 +265,47 @@ pub struct ScrollViewState<InnerState> {
     interaction: ScrollInteraction,
     inner_state: InnerState,
     content_pinning: ContentPinning,
+    /// The view keeps the focused element in view. Scrolling by hand
+    /// stops this until focus moves again.
+    follows_focus: bool,
+}
+
+/// Whether an offset leaves the content pinned to its end along each axis.
+fn pinning_for(offset: Point, scroll_size: Size, inner_size: Size) -> ContentPinning {
+    let should_pin_bottom =
+        -offset.y >= (inner_size.height.saturating_sub(scroll_size.height)) as i32 && offset.y != 0;
+    let should_pin_trailing =
+        -offset.x >= (inner_size.width.saturating_sub(scroll_size.width)) as i32 && offset.x != 0;
+    match (should_pin_trailing, should_pin_bottom) {
+        (false, false) => ContentPinning::Floating,
+        (horizontal, vertical) => ContentPinning::Pinned(horizontal, vertical),
+    }
+}
+
+impl<Inner> ScrollView<Inner> {
+    /// Where content shorter than the view is moved to, within the view.
+    fn content_shift(&self, scroll_size: Size, inner_size: Size) -> Point {
+        if !self.short_content_at_end {
+            return Point::zero();
+        }
+        let (horizontal, vertical) = match self.direction {
+            ScrollDirection::Vertical => (false, true),
+            ScrollDirection::Horizontal => (true, false),
+            ScrollDirection::Both => (true, true),
+        };
+        Point::new(
+            if horizontal {
+                scroll_size.width.saturating_sub(inner_size.width) as i32
+            } else {
+                0
+            },
+            if vertical {
+                scroll_size.height.saturating_sub(inner_size.height) as i32
+            } else {
+                0
+            },
+        )
+    }
 }
 
 impl<Inner: ViewMarker> ViewMarker for ScrollView<Inner> {
@@ -272,6 +338,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             interaction: ScrollInteraction::Idle,
             inner_state: self.inner.build_state(captures),
             content_pinning,
+            follows_focus: true,
         }
     }
 
@@ -331,6 +398,8 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
         let scroll_view_height: u32 = layout.height.into();
         let inner_view_width: u32 = inner_layout.resolved_size.width.0;
         let inner_view_height: u32 = inner_layout.resolved_size.height.0;
+        let scroll_size = Size::new(scroll_view_width, scroll_view_height);
+        let inner_size = Size::new(inner_view_width, inner_view_height);
 
         let permitted_offset_x = inner_view_width.saturating_sub(scroll_view_width) as i32;
         let permitted_offset_y = inner_view_height.saturating_sub(scroll_view_height) as i32;
@@ -387,14 +456,10 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             }
         };
 
-        let (horizontal_bar, vertical_bar) = self.scroll_bars(
-            Point::zero(),
-            Size::new(scroll_view_width, scroll_view_height),
-            Size::new(inner_view_width, inner_view_height),
-            subview_offset,
-        );
+        let (horizontal_bar, vertical_bar) =
+            self.scroll_bars(Point::zero(), scroll_size, inner_size, subview_offset);
 
-        let inner_origin = subview_offset;
+        let inner_origin = subview_offset + self.content_shift(scroll_size, inner_size);
         let inner_render_tree = self.inner.render_tree(
             &inner_layout.sublayouts,
             Point::zero(),
@@ -410,8 +475,8 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
         };
 
         ScrollRenderable::new(
-            Size::new(scroll_view_width, scroll_view_height),
-            Size::new(inner_view_width, inner_view_height),
+            scroll_size,
+            inner_size,
             Offset::new(
                 origin,
                 Animate::new(
@@ -456,23 +521,31 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             if let EventResult::Handled { shape, .. } = &mut result
                 && let Some(frame) = shape.bounding_box()
             {
-                // Only auto-scroll for Next/Previous navigation events.
-                // Focus(direction) is used to acquire focus at the current position,
-                // and should not cause scrolling (e.g., after dragging).
-                // FIXME: This also means that focusing on the first/last doesn't always scroll
-                // as intended
-                let should_auto_scroll = matches!(
-                    focus_event,
-                    crate::focus::FocusAction::Next | crate::focus::FocusAction::Previous
-                );
+                use crate::focus::FocusAction;
+
+                // Moving focus keeps the focused element in view. Acquiring
+                // focus in place, as a rebuild does, follows it too, unless the
+                // content was scrolled away from it by hand since.
+                let navigating = matches!(focus_event, FocusAction::Next | FocusAction::Previous);
+                if navigating {
+                    state.follows_focus = true;
+                }
+                let should_auto_scroll = state.interaction == ScrollInteraction::Idle
+                    && (navigating
+                        || (matches!(focus_event, FocusAction::Focus(_)) && state.follows_focus));
 
                 if should_auto_scroll {
                     let scroll_view_frame = render_tree.bounds();
                     let inner_offset = render_tree.offset();
+                    let margin = self.focus_margin as i32;
 
                     let target_frame = Rectangle::new(
-                        frame.origin + inner_offset + render_tree.inner.offset,
-                        frame.size,
+                        frame.origin + inner_offset + render_tree.inner.offset
+                            - Point::new(margin, margin),
+                        Size::new(
+                            frame.size.width + 2 * self.focus_margin,
+                            frame.size.height + 2 * self.focus_margin,
+                        ),
                     );
 
                     let mut new_offset = state.scroll_offset;
@@ -481,26 +554,40 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                     if target_frame.origin.y < scroll_view_frame.origin.y {
                         // Target is above visible area
                         new_offset.y += scroll_view_frame.origin.y - target_frame.origin.y;
-                        context.request_redraw();
                     } else if target_frame.y_end() > scroll_view_frame.y_end() {
                         // Target is below visible area
                         new_offset.y -= target_frame.y_end() - scroll_view_frame.y_end();
-                        context.request_redraw();
                     }
 
                     // Adjust horizontal offset
                     if target_frame.origin.x < scroll_view_frame.origin.x {
                         // Target is left of visible area
                         new_offset.x += scroll_view_frame.origin.x - target_frame.origin.x;
-                        context.request_redraw();
                     } else if target_frame.x_end() > scroll_view_frame.x_end() {
                         // Target is right of visible area
                         new_offset.x -= target_frame.x_end() - scroll_view_frame.x_end();
-                        context.request_redraw();
                     }
 
-                    state.scroll_offset = new_offset;
-                    *render_tree.offset_mut() = new_offset;
+                    // The margin never scrolls past the content's edges.
+                    let (scroll_size, inner_size) =
+                        (render_tree.scroll_size, render_tree.inner_size);
+                    let permitted = Point::new(
+                        inner_size.width.saturating_sub(scroll_size.width) as i32,
+                        inner_size.height.saturating_sub(scroll_size.height) as i32,
+                    );
+                    new_offset.x = new_offset.x.clamp(-permitted.x, 0);
+                    new_offset.y = new_offset.y.clamp(-permitted.y, 0);
+
+                    if new_offset != state.scroll_offset {
+                        context.request_redraw();
+                        state.scroll_offset = new_offset;
+                        state.content_pinning = pinning_for(new_offset, scroll_size, inner_size);
+                        *render_tree.offset_mut() =
+                            new_offset + self.content_shift(scroll_size, inner_size);
+                        let (horizontal_bar, vertical_bar) =
+                            self.scroll_bars(Point::zero(), scroll_size, inner_size, new_offset);
+                        render_tree.set_bars(horizontal_bar, vertical_bar);
+                    }
                 }
 
                 // Always adjust shape with offset so parent views see correct position
@@ -539,23 +626,15 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
         state.scroll_offset.x = state.scroll_offset.x.saturating_add(delta.x);
         state.scroll_offset.y = state.scroll_offset.y.saturating_add(delta.y);
 
-        let should_pin_bottom = -state.scroll_offset.y
-            >= (render_tree
-                .inner_size
-                .height
-                .saturating_sub(render_tree.scroll_size.height)) as i32
-            && state.scroll_offset.y != 0;
-        let should_pin_trailing = -state.scroll_offset.x
-            >= (render_tree
-                .inner_size
-                .width
-                .saturating_sub(render_tree.scroll_size.width)) as i32
-            && state.scroll_offset.x != 0;
-
-        state.content_pinning = match (should_pin_trailing, should_pin_bottom) {
-            (false, false) => ContentPinning::Floating,
-            (horizontal, vertical) => ContentPinning::Pinned(horizontal, vertical),
-        };
+        if delta != Point::zero() {
+            // Scrolled by hand: stop following focus until it moves.
+            state.follows_focus = false;
+        }
+        state.content_pinning = pinning_for(
+            state.scroll_offset,
+            render_tree.scroll_size,
+            render_tree.inner_size,
+        );
 
         // Recompute scroll bars and manually update the target tree.
         // This is used to avoid recomputing the entire view tree every time the
@@ -594,7 +673,8 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
 
                 offset
             };
-            *render_tree.offset_mut() = subview_offset;
+            *render_tree.offset_mut() = subview_offset
+                + self.content_shift(render_tree.scroll_size, render_tree.inner_size);
             let (horizontal_bar, vertical_bar) = self.scroll_bars(
                 Point::zero(),
                 render_tree.scroll_size,
@@ -822,23 +902,15 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
         state.scroll_offset.x = state.scroll_offset.x.saturating_add(delta.x);
         state.scroll_offset.y = state.scroll_offset.y.saturating_add(delta.y);
 
-        let should_pin_bottom = -state.scroll_offset.y
-            >= (render_tree
-                .inner_size
-                .height
-                .saturating_sub(render_tree.scroll_size.height)) as i32
-            && state.scroll_offset.y != 0;
-        let should_pin_trailing = -state.scroll_offset.x
-            >= (render_tree
-                .inner_size
-                .width
-                .saturating_sub(render_tree.scroll_size.width)) as i32
-            && state.scroll_offset.x != 0;
-
-        state.content_pinning = match (should_pin_trailing, should_pin_bottom) {
-            (false, false) => ContentPinning::Floating,
-            (horizontal, vertical) => ContentPinning::Pinned(horizontal, vertical),
-        };
+        if delta != Point::zero() {
+            // Scrolled by hand: stop following focus until it moves.
+            state.follows_focus = false;
+        }
+        state.content_pinning = pinning_for(
+            state.scroll_offset,
+            render_tree.scroll_size,
+            render_tree.inner_size,
+        );
 
         if delta != Point::zero() && !context.view_rebuild_requested.get() {
             let subview_offset = {
@@ -873,7 +945,8 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
 
                 offset
             };
-            *render_tree.offset_mut() = subview_offset;
+            *render_tree.offset_mut() = subview_offset
+                + self.content_shift(render_tree.scroll_size, render_tree.inner_size);
             let (horizontal_bar, vertical_bar) = self.scroll_bars(
                 Point::zero(),
                 render_tree.scroll_size,
