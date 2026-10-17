@@ -23,6 +23,7 @@ mod view {
     mod paginate;
     mod rotary;
     mod view_that_fits;
+    mod view_that_fits_state;
     mod vstack;
     mod zstack;
 }

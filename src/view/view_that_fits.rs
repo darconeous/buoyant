@@ -219,836 +219,173 @@ const fn make_compact_offer(from_offer: ProposedDimensions, axis: FitAxis) -> Pr
     }
 }
 
-impl<T0, T1> ViewMarker for ViewThatFits<(T0, T1)>
-where
-    T0: ViewMarker,
-    T1: ViewMarker,
-{
-    type Renderables = render::OneOf2<T0::Renderables, T1::Renderables>;
-    type Transition = Opacity;
+/// The views of a [`ViewThatFits`] with several choices.
+///
+/// Each choice has its own state slot, built the first time the choice is
+/// measured. Measuring never discards a slot, so a parent that measures at
+/// several sizes cannot wipe the state of the choice that ends up shown.
+/// Rendering mounts the chosen view: it keeps that choice's state and drops
+/// the others', so a choice that is shown again later starts afresh.
+macro_rules! impl_view_that_fits {
+    ($one_of:ident, $last:tt, $(($idx:tt, $T:ident, $V:ident, $or_init:ident)),+) => {
+        impl<$($T),+> ViewMarker for ViewThatFits<($($T,)+)>
+        where
+            $($T: ViewMarker,)+
+        {
+            type Renderables = render::$one_of<$($T::Renderables),+>;
+            type Transition = Opacity;
+        }
+
+        impl<$($T,)+ Captures: ?Sized> ViewLayout<Captures> for ViewThatFits<($($T,)+)>
+        where
+            $($T: ViewLayout<Captures>,)+
+        {
+            type Sublayout = $one_of<$(ResolvedLayout<$T::Sublayout>),+>;
+            type State = ($(Option<$T::State>,)+);
+            type FocusTree = $one_of<$($T::FocusTree),+>;
+
+            fn transition(&self) -> Self::Transition {
+                Opacity
+            }
+
+            fn build_state(&self, _captures: &mut Captures) -> Self::State {
+                Default::default()
+            }
+
+            #[allow(clippy::eq_op)]
+            fn layout(
+                &self,
+                offer: &ProposedDimensions,
+                env: &impl LayoutEnvironment,
+                captures: &mut Captures,
+                state: &mut Self::State,
+            ) -> ResolvedLayout<Self::Sublayout> {
+                let (horizontal, vertical) = self.axis.components();
+                let subview_offer = make_compact_offer(*offer, self.axis);
+                $(
+                    let slot = state
+                        .$idx
+                        .get_or_insert_with(|| self.choices.$idx.build_state(captures));
+                    // The last choice is used when nothing else fits.
+                    let fits = $idx == $last || {
+                        let layout = self.choices.$idx.layout(&subview_offer, env, captures, slot);
+                        offer.contains(layout.resolved_size, horizontal, vertical)
+                    };
+                    if fits {
+                        // Lay out again with the original offer, not the compact one.
+                        let layout = self.choices.$idx.layout(offer, env, captures, slot);
+                        return ResolvedLayout {
+                            resolved_size: layout.resolved_size,
+                            sublayouts: $one_of::$V(layout),
+                        };
+                    }
+                )+
+                unreachable!("the last choice always fits")
+            }
+
+            fn render_tree(
+                &self,
+                layout: &Self::Sublayout,
+                origin: Point,
+                env: &impl LayoutEnvironment,
+                captures: &mut Captures,
+                state: &mut Self::State,
+            ) -> Self::Renderables {
+                match layout {
+                    $(
+                        $one_of::$V(l) => {
+                            let mut mounted = state
+                                .$idx
+                                .take()
+                                .unwrap_or_else(|| self.choices.$idx.build_state(captures));
+                            let tree = self.choices.$idx.render_tree(
+                                &l.sublayouts,
+                                origin,
+                                env,
+                                captures,
+                                &mut mounted,
+                            );
+                            // Only the mounted choice keeps its state.
+                            *state = Default::default();
+                            state.$idx = Some(mounted);
+                            render::$one_of::$V(tree)
+                        }
+                    )+
+                }
+            }
+
+            fn handle_event(
+                &self,
+                event: &Event,
+                context: &crate::event::EventContext,
+                render_tree: &mut Self::Renderables,
+                captures: &mut Captures,
+                state: &mut Self::State,
+                focus: &mut Self::FocusTree,
+            ) -> EventResult {
+                match render_tree {
+                    $(
+                        render::$one_of::$V(tree) => {
+                            let Some(slot) = state.$idx.as_mut() else {
+                                return EventResult::Deferred;
+                            };
+                            let inner_focus = match event {
+                                Event::Focus {
+                                    action:
+                                        FocusAction::Focus(FocusDirection::Backward)
+                                        | FocusAction::Previous,
+                                    ..
+                                } => focus.$or_init(DefaultFocus::default_last()),
+                                _ => focus.$or_init(DefaultFocus::default_first()),
+                            };
+                            self.choices
+                                .$idx
+                                .handle_event(event, context, tree, captures, slot, inner_focus)
+                        }
+                    )+
+                }
+            }
+
+            fn handle_touch(
+                &self,
+                touch: &Touch,
+                context: &EventContext,
+                render_tree: &mut Self::Renderables,
+                captures: &mut Captures,
+                state: &mut Self::State,
+            ) -> TouchResult<Self::FocusTree> {
+                match render_tree {
+                    $(
+                        render::$one_of::$V(tree) => {
+                            let Some(slot) = state.$idx.as_mut() else {
+                                return TouchResult::Deferred;
+                            };
+                            match self.choices.$idx.handle_touch(touch, context, tree, captures, slot) {
+                                TouchResult::Focused(f) => TouchResult::Focused($one_of::$V(f)),
+                                TouchResult::Handled => TouchResult::Handled,
+                                TouchResult::Deferred => TouchResult::Deferred,
+                            }
+                        }
+                    )+
+                }
+            }
+        }
+    };
 }
 
-impl<T0, T1, Captures: ?Sized> ViewLayout<Captures> for ViewThatFits<(T0, T1)>
-where
-    T0: ViewLayout<Captures>,
-    T1: ViewLayout<Captures>,
-{
-    type Sublayout = OneOf2<ResolvedLayout<T0::Sublayout>, ResolvedLayout<T1::Sublayout>>;
-    type State = OneOf2<T0::State, T1::State>;
-    type FocusTree = OneOf2<T0::FocusTree, T1::FocusTree>;
-
-    fn transition(&self) -> Self::Transition {
-        Opacity
-    }
-
-    fn build_state(&self, captures: &mut Captures) -> Self::State {
-        OneOf2::V0(self.choices.0.build_state(captures))
-    }
-
-    fn layout(
-        &self,
-        offer: &ProposedDimensions,
-        env: &impl LayoutEnvironment,
-        captures: &mut Captures,
-        state: &mut Self::State,
-    ) -> ResolvedLayout<Self::Sublayout> {
-        let (horizontal, vertical) = self.axis.components();
-        let subview_offer = make_compact_offer(*offer, self.axis);
-
-        // Try first choice with compact offer to see if it fits, creating new state if necessary
-        if let OneOf2::V0(state0) = state {
-            let layout = self.choices.0.layout(&subview_offer, env, captures, state0);
-            if offer.contains(layout.resolved_size, horizontal, vertical) {
-                // We don't actually want the compact version, so layout again with the original offer
-                let layout = self.choices.0.layout(offer, env, captures, state0);
-                return ResolvedLayout {
-                    resolved_size: layout.resolved_size,
-                    sublayouts: OneOf2::V0(layout),
-                };
-            }
-        } else {
-            let mut state0 = self.choices.0.build_state(captures);
-            let layout = self
-                .choices
-                .0
-                .layout(&subview_offer, env, captures, &mut state0);
-            if offer.contains(layout.resolved_size, horizontal, vertical) {
-                let layout = self.choices.0.layout(offer, env, captures, &mut state0);
-                *state = OneOf2::V0(state0);
-                return ResolvedLayout {
-                    resolved_size: layout.resolved_size,
-                    sublayouts: OneOf2::V0(layout),
-                };
-            }
-        }
-
-        // Use second choice
-        if let OneOf2::V1(state1) = state {
-            let layout = self.choices.1.layout(offer, env, captures, state1);
-            return ResolvedLayout {
-                resolved_size: layout.resolved_size,
-                sublayouts: OneOf2::V1(layout),
-            };
-        }
-        let mut state1 = self.choices.1.build_state(captures);
-        let layout = self.choices.1.layout(offer, env, captures, &mut state1);
-        *state = OneOf2::V1(state1);
-        ResolvedLayout {
-            resolved_size: layout.resolved_size,
-            sublayouts: OneOf2::V1(layout),
-        }
-    }
-
-    fn render_tree(
-        &self,
-        layout: &Self::Sublayout,
-        origin: Point,
-        env: &impl LayoutEnvironment,
-        captures: &mut Captures,
-        state: &mut Self::State,
-    ) -> Self::Renderables {
-        match (layout, state) {
-            (OneOf2::V0(l0), OneOf2::V0(s0)) => render::OneOf2::V0(self.choices.0.render_tree(
-                &l0.sublayouts,
-                origin,
-                env,
-                captures,
-                s0,
-            )),
-            (OneOf2::V1(l1), OneOf2::V1(s1)) => render::OneOf2::V1(self.choices.1.render_tree(
-                &l1.sublayouts,
-                origin,
-                env,
-                captures,
-                s1,
-            )),
-            _ => panic!("Layout/state branch mismatch"),
-        }
-    }
-
-    fn handle_event(
-        &self,
-        event: &Event,
-        context: &crate::event::EventContext,
-        render_tree: &mut Self::Renderables,
-        captures: &mut Captures,
-        state: &mut Self::State,
-        focus: &mut Self::FocusTree,
-    ) -> EventResult {
-        match (state, render_tree) {
-            (OneOf2::V0(s0), render::OneOf2::V0(t0)) => {
-                if let Event::Focus {
-                    action: focus_event,
-                    ..
-                } = event
-                {
-                    let inner_focus = match focus_event {
-                        FocusAction::Focus(FocusDirection::Backward) | FocusAction::Previous => {
-                            focus.v0_or_init(DefaultFocus::default_last())
-                        }
-                        _ => focus.v0_or_init(DefaultFocus::default_first()),
-                    };
-
-                    self.choices
-                        .0
-                        .handle_event(event, context, t0, captures, s0, inner_focus)
-                } else {
-                    let inner_focus = focus.v0_or_init(DefaultFocus::default_first());
-                    self.choices
-                        .0
-                        .handle_event(event, context, t0, captures, s0, inner_focus)
-                }
-            }
-            (OneOf2::V1(s1), render::OneOf2::V1(t1)) => {
-                if let Event::Focus {
-                    action: focus_event,
-                    ..
-                } = event
-                {
-                    let inner_focus = match focus_event {
-                        FocusAction::Focus(FocusDirection::Backward) | FocusAction::Previous => {
-                            focus.v1_or_init(DefaultFocus::default_last())
-                        }
-                        _ => focus.v1_or_init(DefaultFocus::default_first()),
-                    };
-
-                    self.choices
-                        .1
-                        .handle_event(event, context, t1, captures, s1, inner_focus)
-                } else {
-                    let inner_focus = focus.v1_or_init(DefaultFocus::default_first());
-                    self.choices
-                        .1
-                        .handle_event(event, context, t1, captures, s1, inner_focus)
-                }
-            }
-            _ => {
-                // FIXME: I think it's better here to build new state, leaving to see what
-                // breaks...
-                panic!("Layout/state branch mismatch");
-            }
-        }
-    }
-
-    fn handle_touch(
-        &self,
-        touch: &Touch,
-        context: &EventContext,
-        render_tree: &mut Self::Renderables,
-        captures: &mut Captures,
-        state: &mut Self::State,
-    ) -> TouchResult<Self::FocusTree> {
-        match (state, render_tree) {
-            (OneOf2::V0(s0), render::OneOf2::V0(t0)) => {
-                match self
-                    .choices
-                    .0
-                    .handle_touch(touch, context, t0, captures, s0)
-                {
-                    TouchResult::Focused(f) => TouchResult::Focused(OneOf2::V0(f)),
-                    TouchResult::Handled => TouchResult::Handled,
-                    TouchResult::Deferred => TouchResult::Deferred,
-                }
-            }
-            (OneOf2::V1(s1), render::OneOf2::V1(t1)) => {
-                match self
-                    .choices
-                    .1
-                    .handle_touch(touch, context, t1, captures, s1)
-                {
-                    TouchResult::Focused(f) => TouchResult::Focused(OneOf2::V1(f)),
-                    TouchResult::Handled => TouchResult::Handled,
-                    TouchResult::Deferred => TouchResult::Deferred,
-                }
-            }
-            _ => {
-                panic!("Layout/state branch mismatch");
-            }
-        }
-    }
-}
-
-impl<T0, T1, T2> ViewMarker for ViewThatFits<(T0, T1, T2)>
-where
-    T0: ViewMarker,
-    T1: ViewMarker,
-    T2: ViewMarker,
-{
-    type Renderables = render::OneOf3<T0::Renderables, T1::Renderables, T2::Renderables>;
-    type Transition = Opacity;
-}
-
-impl<T0, T1, T2, Captures: ?Sized> ViewLayout<Captures> for ViewThatFits<(T0, T1, T2)>
-where
-    T0: ViewLayout<Captures>,
-    T1: ViewLayout<Captures>,
-    T2: ViewLayout<Captures>,
-{
-    type Sublayout = OneOf3<
-        ResolvedLayout<T0::Sublayout>,
-        ResolvedLayout<T1::Sublayout>,
-        ResolvedLayout<T2::Sublayout>,
-    >;
-    type State = OneOf3<T0::State, T1::State, T2::State>;
-    type FocusTree = OneOf3<T0::FocusTree, T1::FocusTree, T2::FocusTree>;
-
-    fn transition(&self) -> Self::Transition {
-        Opacity
-    }
-
-    fn build_state(&self, captures: &mut Captures) -> Self::State {
-        OneOf3::V0(self.choices.0.build_state(captures))
-    }
-
-    fn layout(
-        &self,
-        offer: &ProposedDimensions,
-        env: &impl LayoutEnvironment,
-        captures: &mut Captures,
-        state: &mut Self::State,
-    ) -> ResolvedLayout<Self::Sublayout> {
-        let (horizontal, vertical) = self.axis.components();
-        let subview_offer = make_compact_offer(*offer, self.axis);
-
-        // Try first choice with compact offer to see if it fits, creating new state if necessary
-        if let OneOf3::V0(state0) = state {
-            let layout = self.choices.0.layout(&subview_offer, env, captures, state0);
-            if offer.contains(layout.resolved_size, horizontal, vertical) {
-                let layout = self.choices.0.layout(offer, env, captures, state0);
-                return ResolvedLayout {
-                    resolved_size: layout.resolved_size,
-                    sublayouts: OneOf3::V0(layout),
-                };
-            }
-        } else {
-            let mut state0 = self.choices.0.build_state(captures);
-            let layout = self
-                .choices
-                .0
-                .layout(&subview_offer, env, captures, &mut state0);
-            if offer.contains(layout.resolved_size, horizontal, vertical) {
-                let layout = self.choices.0.layout(offer, env, captures, &mut state0);
-                *state = OneOf3::V0(state0);
-                return ResolvedLayout {
-                    resolved_size: layout.resolved_size,
-                    sublayouts: OneOf3::V0(layout),
-                };
-            }
-        }
-
-        // Try second choice
-        if let OneOf3::V1(state1) = state {
-            let layout = self.choices.1.layout(&subview_offer, env, captures, state1);
-            if offer.contains(layout.resolved_size, horizontal, vertical) {
-                let layout = self.choices.1.layout(offer, env, captures, state1);
-                return ResolvedLayout {
-                    resolved_size: layout.resolved_size,
-                    sublayouts: OneOf3::V1(layout),
-                };
-            }
-        } else {
-            let mut state1 = self.choices.1.build_state(captures);
-            let layout = self
-                .choices
-                .1
-                .layout(&subview_offer, env, captures, &mut state1);
-            if offer.contains(layout.resolved_size, horizontal, vertical) {
-                let layout = self.choices.1.layout(offer, env, captures, &mut state1);
-                *state = OneOf3::V1(state1);
-                return ResolvedLayout {
-                    resolved_size: layout.resolved_size,
-                    sublayouts: OneOf3::V1(layout),
-                };
-            }
-        }
-
-        // Use third choice (fallback)
-        if let OneOf3::V2(state2) = state {
-            let layout = self.choices.2.layout(offer, env, captures, state2);
-            return ResolvedLayout {
-                resolved_size: layout.resolved_size,
-                sublayouts: OneOf3::V2(layout),
-            };
-        }
-        let mut state2 = self.choices.2.build_state(captures);
-        let layout = self.choices.2.layout(offer, env, captures, &mut state2);
-        *state = OneOf3::V2(state2);
-        ResolvedLayout {
-            resolved_size: layout.resolved_size,
-            sublayouts: OneOf3::V2(layout),
-        }
-    }
-
-    fn render_tree(
-        &self,
-        layout: &Self::Sublayout,
-        origin: Point,
-        env: &impl LayoutEnvironment,
-        captures: &mut Captures,
-        state: &mut Self::State,
-    ) -> Self::Renderables {
-        match (layout, state) {
-            (OneOf3::V0(l0), OneOf3::V0(s0)) => render::OneOf3::V0(self.choices.0.render_tree(
-                &l0.sublayouts,
-                origin,
-                env,
-                captures,
-                s0,
-            )),
-            (OneOf3::V1(l1), OneOf3::V1(s1)) => render::OneOf3::V1(self.choices.1.render_tree(
-                &l1.sublayouts,
-                origin,
-                env,
-                captures,
-                s1,
-            )),
-            (OneOf3::V2(l2), OneOf3::V2(s2)) => render::OneOf3::V2(self.choices.2.render_tree(
-                &l2.sublayouts,
-                origin,
-                env,
-                captures,
-                s2,
-            )),
-            _ => panic!("Layout/state branch mismatch"),
-        }
-    }
-
-    fn handle_event(
-        &self,
-        event: &Event,
-        context: &crate::event::EventContext,
-        render_tree: &mut Self::Renderables,
-        captures: &mut Captures,
-        state: &mut Self::State,
-        focus: &mut Self::FocusTree,
-    ) -> EventResult {
-        match (state, render_tree) {
-            (OneOf3::V0(s0), render::OneOf3::V0(t0)) => {
-                if let Event::Focus {
-                    action: focus_event,
-                    ..
-                } = event
-                {
-                    let inner_focus = match focus_event {
-                        FocusAction::Focus(FocusDirection::Backward) | FocusAction::Previous => {
-                            focus.v0_or_init(DefaultFocus::default_last())
-                        }
-                        _ => focus.v0_or_init(DefaultFocus::default_first()),
-                    };
-
-                    self.choices
-                        .0
-                        .handle_event(event, context, t0, captures, s0, inner_focus)
-                } else {
-                    let inner_focus = focus.v0_or_init(DefaultFocus::default_first());
-                    self.choices
-                        .0
-                        .handle_event(event, context, t0, captures, s0, inner_focus)
-                }
-            }
-            (OneOf3::V1(s1), render::OneOf3::V1(t1)) => {
-                if let Event::Focus {
-                    action: focus_event,
-                    ..
-                } = event
-                {
-                    let inner_focus = match focus_event {
-                        FocusAction::Focus(FocusDirection::Backward) | FocusAction::Previous => {
-                            focus.v1_or_init(DefaultFocus::default_last())
-                        }
-                        _ => focus.v1_or_init(DefaultFocus::default_first()),
-                    };
-
-                    self.choices
-                        .1
-                        .handle_event(event, context, t1, captures, s1, inner_focus)
-                } else {
-                    let inner_focus = focus.v1_or_init(DefaultFocus::default_first());
-                    self.choices
-                        .1
-                        .handle_event(event, context, t1, captures, s1, inner_focus)
-                }
-            }
-            (OneOf3::V2(s2), render::OneOf3::V2(t2)) => {
-                if let Event::Focus {
-                    action: focus_event,
-                    ..
-                } = event
-                {
-                    let inner_focus = match focus_event {
-                        FocusAction::Focus(FocusDirection::Backward) | FocusAction::Previous => {
-                            focus.v2_or_init(DefaultFocus::default_last())
-                        }
-                        _ => focus.v2_or_init(DefaultFocus::default_first()),
-                    };
-
-                    self.choices
-                        .2
-                        .handle_event(event, context, t2, captures, s2, inner_focus)
-                } else {
-                    let inner_focus = focus.v2_or_init(DefaultFocus::default_first());
-                    self.choices
-                        .2
-                        .handle_event(event, context, t2, captures, s2, inner_focus)
-                }
-            }
-            _ => {
-                panic!("Layout/state branch mismatch");
-            }
-        }
-    }
-
-    fn handle_touch(
-        &self,
-        touch: &Touch,
-        context: &EventContext,
-        render_tree: &mut Self::Renderables,
-        captures: &mut Captures,
-        state: &mut Self::State,
-    ) -> TouchResult<Self::FocusTree> {
-        match (state, render_tree) {
-            (OneOf3::V0(s0), render::OneOf3::V0(t0)) => {
-                match self
-                    .choices
-                    .0
-                    .handle_touch(touch, context, t0, captures, s0)
-                {
-                    TouchResult::Focused(f) => TouchResult::Focused(OneOf3::V0(f)),
-                    TouchResult::Handled => TouchResult::Handled,
-                    TouchResult::Deferred => TouchResult::Deferred,
-                }
-            }
-            (OneOf3::V1(s1), render::OneOf3::V1(t1)) => {
-                match self
-                    .choices
-                    .1
-                    .handle_touch(touch, context, t1, captures, s1)
-                {
-                    TouchResult::Focused(f) => TouchResult::Focused(OneOf3::V1(f)),
-                    TouchResult::Handled => TouchResult::Handled,
-                    TouchResult::Deferred => TouchResult::Deferred,
-                }
-            }
-            (OneOf3::V2(s2), render::OneOf3::V2(t2)) => {
-                match self
-                    .choices
-                    .2
-                    .handle_touch(touch, context, t2, captures, s2)
-                {
-                    TouchResult::Focused(f) => TouchResult::Focused(OneOf3::V2(f)),
-                    TouchResult::Handled => TouchResult::Handled,
-                    TouchResult::Deferred => TouchResult::Deferred,
-                }
-            }
-            _ => {
-                panic!("Layout/state branch mismatch");
-            }
-        }
-    }
-}
-
-impl<T0, T1, T2, T3> ViewMarker for ViewThatFits<(T0, T1, T2, T3)>
-where
-    T0: ViewMarker,
-    T1: ViewMarker,
-    T2: ViewMarker,
-    T3: ViewMarker,
-{
-    type Renderables =
-        render::OneOf4<T0::Renderables, T1::Renderables, T2::Renderables, T3::Renderables>;
-    type Transition = Opacity;
-}
-
-impl<T0, T1, T2, T3, Captures: ?Sized> ViewLayout<Captures> for ViewThatFits<(T0, T1, T2, T3)>
-where
-    T0: ViewLayout<Captures>,
-    T1: ViewLayout<Captures>,
-    T2: ViewLayout<Captures>,
-    T3: ViewLayout<Captures>,
-{
-    type Sublayout = OneOf4<
-        ResolvedLayout<T0::Sublayout>,
-        ResolvedLayout<T1::Sublayout>,
-        ResolvedLayout<T2::Sublayout>,
-        ResolvedLayout<T3::Sublayout>,
-    >;
-    type State = OneOf4<T0::State, T1::State, T2::State, T3::State>;
-    type FocusTree = OneOf4<T0::FocusTree, T1::FocusTree, T2::FocusTree, T3::FocusTree>;
-
-    fn transition(&self) -> Self::Transition {
-        Opacity
-    }
-
-    fn build_state(&self, captures: &mut Captures) -> Self::State {
-        OneOf4::V0(self.choices.0.build_state(captures))
-    }
-
-    fn layout(
-        &self,
-        offer: &ProposedDimensions,
-        env: &impl LayoutEnvironment,
-        captures: &mut Captures,
-        state: &mut Self::State,
-    ) -> ResolvedLayout<Self::Sublayout> {
-        let (horizontal, vertical) = self.axis.components();
-        let subview_offer = make_compact_offer(*offer, self.axis);
-
-        // Try first choice with compact offer to see if it fits, creating new state if necessary
-        if let OneOf4::V0(state0) = state {
-            let layout = self.choices.0.layout(&subview_offer, env, captures, state0);
-            if offer.contains(layout.resolved_size, horizontal, vertical) {
-                let layout = self.choices.0.layout(offer, env, captures, state0);
-                return ResolvedLayout {
-                    resolved_size: layout.resolved_size,
-                    sublayouts: OneOf4::V0(layout),
-                };
-            }
-        } else {
-            let mut state0 = self.choices.0.build_state(captures);
-            let layout = self
-                .choices
-                .0
-                .layout(&subview_offer, env, captures, &mut state0);
-            if offer.contains(layout.resolved_size, horizontal, vertical) {
-                let layout = self.choices.0.layout(offer, env, captures, &mut state0);
-                *state = OneOf4::V0(state0);
-                return ResolvedLayout {
-                    resolved_size: layout.resolved_size,
-                    sublayouts: OneOf4::V0(layout),
-                };
-            }
-        }
-
-        // Try second choice
-        if let OneOf4::V1(state1) = state {
-            let layout = self.choices.1.layout(&subview_offer, env, captures, state1);
-            if offer.contains(layout.resolved_size, horizontal, vertical) {
-                let layout = self.choices.1.layout(offer, env, captures, state1);
-                return ResolvedLayout {
-                    resolved_size: layout.resolved_size,
-                    sublayouts: OneOf4::V1(layout),
-                };
-            }
-        } else {
-            let mut state1 = self.choices.1.build_state(captures);
-            let layout = self
-                .choices
-                .1
-                .layout(&subview_offer, env, captures, &mut state1);
-            if offer.contains(layout.resolved_size, horizontal, vertical) {
-                let layout = self.choices.1.layout(offer, env, captures, &mut state1);
-                *state = OneOf4::V1(state1);
-                return ResolvedLayout {
-                    resolved_size: layout.resolved_size,
-                    sublayouts: OneOf4::V1(layout),
-                };
-            }
-        }
-
-        // Try third choice
-        if let OneOf4::V2(state2) = state {
-            let layout = self.choices.2.layout(&subview_offer, env, captures, state2);
-            if offer.contains(layout.resolved_size, horizontal, vertical) {
-                let layout = self.choices.2.layout(offer, env, captures, state2);
-                return ResolvedLayout {
-                    resolved_size: layout.resolved_size,
-                    sublayouts: OneOf4::V2(layout),
-                };
-            }
-        } else {
-            let mut state2 = self.choices.2.build_state(captures);
-            let layout = self
-                .choices
-                .2
-                .layout(&subview_offer, env, captures, &mut state2);
-            if offer.contains(layout.resolved_size, horizontal, vertical) {
-                let layout = self.choices.2.layout(offer, env, captures, &mut state2);
-                *state = OneOf4::V2(state2);
-                return ResolvedLayout {
-                    resolved_size: layout.resolved_size,
-                    sublayouts: OneOf4::V2(layout),
-                };
-            }
-        }
-
-        // Use fourth choice (fallback)
-        if let OneOf4::V3(state3) = state {
-            let layout = self.choices.3.layout(offer, env, captures, state3);
-            return ResolvedLayout {
-                resolved_size: layout.resolved_size,
-                sublayouts: OneOf4::V3(layout),
-            };
-        }
-        let mut state3 = self.choices.3.build_state(captures);
-        let layout = self.choices.3.layout(offer, env, captures, &mut state3);
-        *state = OneOf4::V3(state3);
-        ResolvedLayout {
-            resolved_size: layout.resolved_size,
-            sublayouts: OneOf4::V3(layout),
-        }
-    }
-
-    fn render_tree(
-        &self,
-        layout: &Self::Sublayout,
-        origin: Point,
-        env: &impl LayoutEnvironment,
-        captures: &mut Captures,
-        state: &mut Self::State,
-    ) -> Self::Renderables {
-        match (&layout, state) {
-            (OneOf4::V0(l0), OneOf4::V0(s0)) => render::OneOf4::V0(self.choices.0.render_tree(
-                &l0.sublayouts,
-                origin,
-                env,
-                captures,
-                s0,
-            )),
-            (OneOf4::V1(l1), OneOf4::V1(s1)) => render::OneOf4::V1(self.choices.1.render_tree(
-                &l1.sublayouts,
-                origin,
-                env,
-                captures,
-                s1,
-            )),
-            (OneOf4::V2(l2), OneOf4::V2(s2)) => render::OneOf4::V2(self.choices.2.render_tree(
-                &l2.sublayouts,
-                origin,
-                env,
-                captures,
-                s2,
-            )),
-            (OneOf4::V3(l3), OneOf4::V3(s3)) => render::OneOf4::V3(self.choices.3.render_tree(
-                &l3.sublayouts,
-                origin,
-                env,
-                captures,
-                s3,
-            )),
-            _ => panic!("Layout/state branch mismatch"),
-        }
-    }
-
-    fn handle_event(
-        &self,
-        event: &Event,
-        context: &crate::event::EventContext,
-        render_tree: &mut Self::Renderables,
-        captures: &mut Captures,
-        state: &mut Self::State,
-        focus: &mut Self::FocusTree,
-    ) -> EventResult {
-        match (state, render_tree) {
-            (OneOf4::V0(s0), render::OneOf4::V0(t0)) => {
-                if let Event::Focus {
-                    action: focus_event,
-                    ..
-                } = event
-                {
-                    let inner_focus = match focus_event {
-                        FocusAction::Focus(FocusDirection::Backward) | FocusAction::Previous => {
-                            focus.v0_or_init(DefaultFocus::default_last())
-                        }
-                        _ => focus.v0_or_init(DefaultFocus::default_first()),
-                    };
-                    self.choices
-                        .0
-                        .handle_event(event, context, t0, captures, s0, inner_focus)
-                } else {
-                    let inner_focus = focus.v0_or_init(DefaultFocus::default_first());
-                    self.choices
-                        .0
-                        .handle_event(event, context, t0, captures, s0, inner_focus)
-                }
-            }
-            (OneOf4::V1(s1), render::OneOf4::V1(t1)) => {
-                if let Event::Focus {
-                    action: focus_event,
-                    ..
-                } = event
-                {
-                    let inner_focus = match focus_event {
-                        FocusAction::Focus(FocusDirection::Backward) | FocusAction::Previous => {
-                            focus.v1_or_init(DefaultFocus::default_last())
-                        }
-                        _ => focus.v1_or_init(DefaultFocus::default_first()),
-                    };
-                    self.choices
-                        .1
-                        .handle_event(event, context, t1, captures, s1, inner_focus)
-                } else {
-                    let inner_focus = focus.v1_or_init(DefaultFocus::default_first());
-                    self.choices
-                        .1
-                        .handle_event(event, context, t1, captures, s1, inner_focus)
-                }
-            }
-            (OneOf4::V2(s2), render::OneOf4::V2(t2)) => {
-                if let Event::Focus {
-                    action: focus_event,
-                    ..
-                } = event
-                {
-                    let inner_focus = match focus_event {
-                        FocusAction::Focus(FocusDirection::Backward) | FocusAction::Previous => {
-                            focus.v2_or_init(DefaultFocus::default_last())
-                        }
-                        _ => focus.v2_or_init(DefaultFocus::default_first()),
-                    };
-                    self.choices
-                        .2
-                        .handle_event(event, context, t2, captures, s2, inner_focus)
-                } else {
-                    let inner_focus = focus.v2_or_init(DefaultFocus::default_first());
-                    self.choices
-                        .2
-                        .handle_event(event, context, t2, captures, s2, inner_focus)
-                }
-            }
-            (OneOf4::V3(s3), render::OneOf4::V3(t3)) => {
-                if let Event::Focus {
-                    action: focus_event,
-                    ..
-                } = event
-                {
-                    let inner_focus = match focus_event {
-                        FocusAction::Focus(FocusDirection::Backward) | FocusAction::Previous => {
-                            focus.v3_or_init(DefaultFocus::default_last())
-                        }
-                        _ => focus.v3_or_init(DefaultFocus::default_first()),
-                    };
-                    self.choices
-                        .3
-                        .handle_event(event, context, t3, captures, s3, inner_focus)
-                } else {
-                    let inner_focus = focus.v3_or_init(DefaultFocus::default_first());
-                    self.choices
-                        .3
-                        .handle_event(event, context, t3, captures, s3, inner_focus)
-                }
-            }
-            _ => {
-                panic!("Layout/state branch mismatch");
-            }
-        }
-    }
-
-    fn handle_touch(
-        &self,
-        touch: &Touch,
-        context: &EventContext,
-        render_tree: &mut Self::Renderables,
-        captures: &mut Captures,
-        state: &mut Self::State,
-    ) -> TouchResult<Self::FocusTree> {
-        match (state, render_tree) {
-            (OneOf4::V0(s0), render::OneOf4::V0(t0)) => {
-                match self
-                    .choices
-                    .0
-                    .handle_touch(touch, context, t0, captures, s0)
-                {
-                    TouchResult::Focused(f) => TouchResult::Focused(OneOf4::V0(f)),
-                    TouchResult::Handled => TouchResult::Handled,
-                    TouchResult::Deferred => TouchResult::Deferred,
-                }
-            }
-            (OneOf4::V1(s1), render::OneOf4::V1(t1)) => {
-                match self
-                    .choices
-                    .1
-                    .handle_touch(touch, context, t1, captures, s1)
-                {
-                    TouchResult::Focused(f) => TouchResult::Focused(OneOf4::V1(f)),
-                    TouchResult::Handled => TouchResult::Handled,
-                    TouchResult::Deferred => TouchResult::Deferred,
-                }
-            }
-            (OneOf4::V2(s2), render::OneOf4::V2(t2)) => {
-                match self
-                    .choices
-                    .2
-                    .handle_touch(touch, context, t2, captures, s2)
-                {
-                    TouchResult::Focused(f) => TouchResult::Focused(OneOf4::V2(f)),
-                    TouchResult::Handled => TouchResult::Handled,
-                    TouchResult::Deferred => TouchResult::Deferred,
-                }
-            }
-            (OneOf4::V3(s3), render::OneOf4::V3(t3)) => {
-                match self
-                    .choices
-                    .3
-                    .handle_touch(touch, context, t3, captures, s3)
-                {
-                    TouchResult::Focused(f) => TouchResult::Focused(OneOf4::V3(f)),
-                    TouchResult::Handled => TouchResult::Handled,
-                    TouchResult::Deferred => TouchResult::Deferred,
-                }
-            }
-            _ => {
-                panic!("Layout/state branch mismatch");
-            }
-        }
-    }
-}
+impl_view_that_fits!(OneOf2, 1, (0, T0, V0, v0_or_init), (1, T1, V1, v1_or_init));
+impl_view_that_fits!(
+    OneOf3,
+    2,
+    (0, T0, V0, v0_or_init),
+    (1, T1, V1, v1_or_init),
+    (2, T2, V2, v2_or_init)
+);
+impl_view_that_fits!(
+    OneOf4,
+    3,
+    (0, T0, V0, v0_or_init),
+    (1, T1, V1, v1_or_init),
+    (2, T2, V2, v2_or_init),
+    (3, T3, V3, v3_or_init)
+);
