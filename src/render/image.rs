@@ -14,26 +14,28 @@ pub struct Original;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Template;
 
+/// An image drawn at `origin`, held through `P`: a reference, or any other
+/// pointer to it.
 #[non_exhaustive]
 #[derive(Debug, PartialEq, Eq)]
-pub struct Image<'a, T: ?Sized, Mode = Original> {
+pub struct Image<P, Mode = Original> {
     pub origin: Point,
-    pub image: &'a T,
+    pub image: P,
     pub _mode: PhantomData<Mode>,
 }
 
-impl<T: ?Sized, Mode> Clone for Image<'_, T, Mode> {
+impl<P: Clone, Mode> Clone for Image<P, Mode> {
     fn clone(&self) -> Self {
         Self {
             origin: self.origin,
-            image: self.image,
+            image: self.image.clone(),
             _mode: PhantomData,
         }
     }
 }
 
-impl<'a, T: ?Sized, Mode> Image<'a, T, Mode> {
-    pub const fn new(origin: Point, image: &'a T) -> Self {
+impl<P, Mode> Image<P, Mode> {
+    pub const fn new(origin: Point, image: P) -> Self {
         Self {
             origin,
             image,
@@ -42,7 +44,7 @@ impl<'a, T: ?Sized, Mode> Image<'a, T, Mode> {
     }
 }
 
-impl<T: ?Sized, Mode> AnimatedJoin for Image<'_, T, Mode> {
+impl<P, Mode> AnimatedJoin for Image<P, Mode> {
     fn join_from(&mut self, source: &Self, domain: &AnimationDomain) {
         // image content jumps
         self.origin = Point::interpolate(source.origin, self.origin, domain.factor);
@@ -82,6 +84,7 @@ impl<T: ?Sized, Mode> AnimatedJoin for Image<'_, T, Mode> {
 #[cfg(feature = "embedded-graphics")]
 mod embedded_graphics {
     use core::marker::PhantomData;
+    use core::ops::Deref;
     use embedded_graphics::{
         Pixel,
         draw_target::{DrawTarget, DrawTargetExt as _},
@@ -220,7 +223,11 @@ mod embedded_graphics {
         }
     }
 
-    impl<I: ImageDrawable> Render<I::Color> for Image<'_, I, super::Original> {
+    impl<P, I> Render<I::Color> for Image<P, super::Original>
+    where
+        P: Deref<Target = I>,
+        I: ImageDrawable,
+    {
         fn render(
             &self,
             render_target: &mut impl RenderTarget<ColorFormat = I::Color>,
@@ -228,7 +235,7 @@ mod embedded_graphics {
         ) {
             draw_image(
                 &mut render_target.raw_surface(self.origin).draw_target(),
-                self.image,
+                &*self.image,
             );
         }
 
@@ -242,7 +249,7 @@ mod embedded_graphics {
             let origin = Point::interpolate(source.origin, target.origin, domain.factor);
             draw_image(
                 &mut render_target.raw_surface(origin).draw_target(),
-                target.image,
+                &*target.image,
             );
         }
     }
@@ -270,8 +277,9 @@ mod embedded_graphics {
         }
     }
 
-    impl<I, TargetColor> Render<TargetColor> for Image<'_, I, super::Template>
+    impl<P, I, TargetColor> Render<TargetColor> for Image<P, super::Template>
     where
+        P: Deref<Target = I>,
         I: ImageDrawable,
         I::Color: GrayColor,
         TargetColor: PixelColor + Interpolate,
@@ -281,7 +289,7 @@ mod embedded_graphics {
             render_target: &mut impl RenderTarget<ColorFormat = TargetColor>,
             style: &TargetColor,
         ) {
-            draw_template(render_target, self.image, self.origin, *style);
+            draw_template(render_target, &*self.image, self.origin, *style);
         }
 
         fn render_animated(
@@ -292,7 +300,7 @@ mod embedded_graphics {
             domain: &super::AnimationDomain,
         ) {
             let origin = Point::interpolate(source.origin, target.origin, domain.factor);
-            draw_template(render_target, target.image, origin, *style);
+            draw_template(render_target, &*target.image, origin, *style);
         }
     }
 
@@ -322,7 +330,11 @@ mod embedded_graphics {
         );
     }
 
-    impl<I: ImageDrawable, Mode> IntrinsicShape for Image<'_, I, Mode> {
+    impl<P, I, Mode> IntrinsicShape for Image<P, Mode>
+    where
+        P: Deref<Target = I>,
+        I: ImageDrawable,
+    {
         fn content_shape(&self) -> ContentShape {
             let size = self.image.size().into();
             Rectangle::new(self.origin, size).into()
@@ -358,9 +370,9 @@ mod tests {
             height: 20,
         };
 
-        let source: Image<'_, MockImageData, Original> =
+        let source: Image<&MockImageData, Original> =
             Image::new(Point::new(0, 0), &source_image_data);
-        let original_target: Image<'_, MockImageData, Original> =
+        let original_target: Image<&MockImageData, Original> =
             Image::new(Point::new(50, 25), &target_image_data);
 
         let mut target = original_target.clone();

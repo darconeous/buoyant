@@ -1,4 +1,5 @@
 use core::marker::PhantomData;
+use core::ops::Deref;
 
 use embedded_graphics::{image::ImageDrawable, prelude::OriginDimensions};
 use embedded_touch::{Phase, Touch};
@@ -19,6 +20,9 @@ pub use render::image::{Original, Template};
 ///
 /// Images are fixed to the size of the image itself.
 ///
+/// The view holds the image through `P`: a reference, or any other pointer to
+/// it, such as one that owns an image made while the program runs.
+///
 /// The `Mode` parameter selects how the image is rendered. It defaults to
 /// [`Original`], which draws the image in its own colors. Use
 /// [`Image::as_template`] to obtain an [`Image`] backed by the [`Template`]
@@ -26,15 +30,15 @@ pub use render::image::{Original, Template};
 /// the foreground color and rendering black pixels transparent.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Image<'a, T: ?Sized, Mode = Original> {
-    image: &'a T,
+pub struct Image<P, Mode = Original> {
+    image: P,
     _mode: PhantomData<Mode>,
 }
 
-impl<'a, T: ImageDrawable + ?Sized> Image<'a, T, Original> {
+impl<P: Deref<Target: ImageDrawable>> Image<P, Original> {
     #[allow(missing_docs)]
     #[must_use]
-    pub const fn new(image: &'a T) -> Self {
+    pub const fn new(image: P) -> Self {
         Self {
             image,
             _mode: PhantomData,
@@ -48,7 +52,7 @@ impl<'a, T: ImageDrawable + ?Sized> Image<'a, T, Original> {
     /// background hint. Without a hint, all nonzero pixels use the foreground
     /// color. The image must use a grayscale color format.
     #[must_use]
-    pub const fn as_template(self) -> Image<'a, T, Template> {
+    pub fn as_template(self) -> Image<P, Template> {
         Image {
             image: self.image,
             _mode: PhantomData,
@@ -56,14 +60,14 @@ impl<'a, T: ImageDrawable + ?Sized> Image<'a, T, Original> {
     }
 }
 
-impl<'a, T: ?Sized, Mode> ViewMarker for Image<'a, T, Mode> {
-    type Renderables = render::Image<'a, T, Mode>;
+impl<P: Clone, Mode> ViewMarker for Image<P, Mode> {
+    type Renderables = render::Image<P, Mode>;
     type Transition = Opacity;
 }
 
-impl<Captures: ?Sized, T, Mode> ViewLayout<Captures> for Image<'_, T, Mode>
+impl<Captures: ?Sized, P, Mode> ViewLayout<Captures> for Image<P, Mode>
 where
-    T: OriginDimensions + ImageDrawable + ?Sized,
+    P: Clone + Deref<Target: OriginDimensions + ImageDrawable>,
 {
     type Sublayout = ();
     type State = ();
@@ -97,7 +101,7 @@ where
         _captures: &mut Captures,
         _state: &mut Self::State,
     ) -> Self::Renderables {
-        Self::Renderables::new(origin, self.image)
+        Self::Renderables::new(origin, self.image.clone())
     }
 
     fn handle_event(
