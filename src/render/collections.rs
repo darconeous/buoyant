@@ -183,6 +183,11 @@ impl<Color, T: Render<Color>> Render<Color> for [T] {
             .for_each(|(source, target)| {
                 T::render_animated(render_target, source, target, style, domain);
             });
+        // Items added since the source have nothing to animate from, and
+        // are drawn as they are. Items since removed are gone.
+        for item in target.iter().skip(source.len()) {
+            item.render(render_target, style);
+        }
     }
 }
 
@@ -334,6 +339,27 @@ mod render_order_tests {
     test_tuple_render_order!(0, 1, 2, 3, 4, 5, 6, 7);
     test_tuple_render_order!(0, 1, 2, 3, 4, 5, 6, 7, 8);
     test_tuple_render_order!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+
+    #[test]
+    fn items_added_since_the_source_are_drawn() {
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let mut mock_target = crate::render_target::FixedTextBuffer::<10, 10>::default();
+        let source: heapless::Vec<OrderTracker, 4> = (0..2)
+            .map(|id| OrderTracker::new(id, order.clone()))
+            .collect();
+        let target: heapless::Vec<OrderTracker, 4> = (100..103)
+            .map(|id| OrderTracker::new(id, order.clone()))
+            .collect();
+
+        let domain = AnimationDomain::new(128, std::time::Duration::from_secs(1));
+        Render::render_animated(&mut mock_target, &source, &target, &'x', &domain);
+        assert_eq!(*order.borrow(), vec![0, 100, 1, 101, 102]);
+
+        // Items removed since the source are not drawn.
+        order.borrow_mut().clear();
+        Render::render_animated(&mut mock_target, &target, &source, &'x', &domain);
+        assert_eq!(*order.borrow(), vec![100, 0, 101, 1]);
+    }
 }
 
 #[cfg(test)]
