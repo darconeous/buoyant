@@ -233,10 +233,88 @@ macro_rules! match_view {
             $pattern1:pat => $view1:expr,
             $pattern2:pat => $view2:expr,
             $pattern3:pat => $view3:expr,
+            $pattern4:pat => $view4:expr,
+            $pattern5:pat => $view5:expr,
+            $pattern6:pat => $view6:expr,
+            $pattern7:pat => $view7:expr $(,)?
+        }
+    ) => {{
+        match $value {
+            $pattern0 => $crate::view::match_view::OneOf8::V0($view0),
+            $pattern1 => $crate::view::match_view::OneOf8::V1($view1),
+            $pattern2 => $crate::view::match_view::OneOf8::V2($view2),
+            $pattern3 => $crate::view::match_view::OneOf8::V3($view3),
+            $pattern4 => $crate::view::match_view::OneOf8::V4($view4),
+            $pattern5 => $crate::view::match_view::OneOf8::V5($view5),
+            $pattern6 => $crate::view::match_view::OneOf8::V6($view6),
+            $pattern7 => $crate::view::match_view::OneOf8::V7($view7),
+        }
+    }};
+
+    (
+        $value:expr, {
+            $pattern0:pat => $view0:expr,
+            $pattern1:pat => $view1:expr,
+            $pattern2:pat => $view2:expr,
+            $pattern3:pat => $view3:expr,
+            $pattern4:pat => $view4:expr,
+            $pattern5:pat => $view5:expr,
+            $pattern6:pat => $view6:expr,
+            $pattern7:pat => $view7:expr,
+            $pattern8:pat => $view8:expr $(,)?
+        }
+    ) => {{
+        match $value {
+            $pattern0 => $crate::view::match_view::OneOf9::V0($view0),
+            $pattern1 => $crate::view::match_view::OneOf9::V1($view1),
+            $pattern2 => $crate::view::match_view::OneOf9::V2($view2),
+            $pattern3 => $crate::view::match_view::OneOf9::V3($view3),
+            $pattern4 => $crate::view::match_view::OneOf9::V4($view4),
+            $pattern5 => $crate::view::match_view::OneOf9::V5($view5),
+            $pattern6 => $crate::view::match_view::OneOf9::V6($view6),
+            $pattern7 => $crate::view::match_view::OneOf9::V7($view7),
+            $pattern8 => $crate::view::match_view::OneOf9::V8($view8),
+        }
+    }};
+
+    (
+        $value:expr, {
+            $pattern0:pat => $view0:expr,
+            $pattern1:pat => $view1:expr,
+            $pattern2:pat => $view2:expr,
+            $pattern3:pat => $view3:expr,
+            $pattern4:pat => $view4:expr,
+            $pattern5:pat => $view5:expr,
+            $pattern6:pat => $view6:expr,
+            $pattern7:pat => $view7:expr,
+            $pattern8:pat => $view8:expr,
+            $pattern9:pat => $view9:expr $(,)?
+        }
+    ) => {{
+        match $value {
+            $pattern0 => $crate::view::match_view::OneOf10::V0($view0),
+            $pattern1 => $crate::view::match_view::OneOf10::V1($view1),
+            $pattern2 => $crate::view::match_view::OneOf10::V2($view2),
+            $pattern3 => $crate::view::match_view::OneOf10::V3($view3),
+            $pattern4 => $crate::view::match_view::OneOf10::V4($view4),
+            $pattern5 => $crate::view::match_view::OneOf10::V5($view5),
+            $pattern6 => $crate::view::match_view::OneOf10::V6($view6),
+            $pattern7 => $crate::view::match_view::OneOf10::V7($view7),
+            $pattern8 => $crate::view::match_view::OneOf10::V8($view8),
+            $pattern9 => $crate::view::match_view::OneOf10::V9($view9),
+        }
+    }};
+
+    (
+        $value:expr, {
+            $pattern0:pat => $view0:expr,
+            $pattern1:pat => $view1:expr,
+            $pattern2:pat => $view2:expr,
+            $pattern3:pat => $view3:expr,
             $($pattern:pat => $view:expr),*
         }
     ) => {{
-        compile_error!("match_view! implements up to 7 branches.");
+        compile_error!("match_view! implements up to 10 branches.");
     }};
 }
 
@@ -569,5 +647,26 @@ mod tests {
         });
 
         assert_eq!(view, super::OneOf3::V1(2));
+    }
+
+    #[test]
+    fn match_view_ten_branches() {
+        let view = match_view!(7, {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            3 => 3,
+            4 => 4,
+            5 => 5,
+            6 => 6,
+            7 => 7,
+            8 => 8,
+            _ => 9,
+        });
+
+        assert_eq!(
+            view,
+            super::OneOf10::<u8, u8, u8, u8, u8, u8, u8, u8, u8, u8>::V7(7)
+        );
     }
 }
