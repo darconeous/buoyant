@@ -2,7 +2,11 @@ use core::ops::Range;
 
 use crate::{
     font::{Font, FontMetrics, FontRender},
-    primitives::{Interpolate, Point, Size, geometry::Rectangle, transform::LinearTransform},
+    primitives::{
+        Interpolate, Point, Size,
+        geometry::{Rectangle, RoundedRectangle},
+        transform::LinearTransform,
+    },
     render::{AnimatedJoin, AnimationDomain, ContentShape, IntrinsicShape, Render},
     render_target::{Glyph, RenderTarget, SolidBrush},
 };
@@ -10,26 +14,64 @@ use crate::{
 /// The most lines a text field shows at once.
 pub const MAX_VISIBLE_LINES: usize = 8;
 
-/// The color a field's caret is drawn in, given its text's.
-pub trait CaretStyle<C> {
+/// How wide a text field's scroll bar is.
+pub const SCROLL_BAR_WIDTH: u32 = 3;
+
+/// The colors a text field draws in besides its text's.
+pub trait AreaStyle<C> {
+    /// The caret's color, given the text's.
     fn caret_color(&self, text: C) -> C;
+    /// The track and thumb of the bar showing which lines are shown, when
+    /// there is one.
+    fn scroll_bar(&self) -> Option<(C, C)>;
 }
 
-/// The caret is drawn in the text's color.
-impl<C> CaretStyle<C> for () {
+/// The caret takes the text's color, and there is no scroll bar.
+impl<C> AreaStyle<C> for () {
     fn caret_color(&self, text: C) -> C {
         text
     }
+
+    fn scroll_bar(&self) -> Option<(C, C)> {
+        None
+    }
 }
 
-/// The caret is drawn in a color of its own.
+/// Colors of a text field's own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CaretColor<C>(pub C);
+pub struct AreaColors<C> {
+    /// The caret, or the text's color when `None`.
+    pub caret: Option<C>,
+    /// The scroll bar's track and thumb. Without them, a draft longer than
+    /// the field shows no bar.
+    pub scroll_bar: Option<(C, C)>,
+}
 
-impl<C: Copy> CaretStyle<C> for CaretColor<C> {
-    fn caret_color(&self, _text: C) -> C {
-        self.0
+impl<C> Default for AreaColors<C> {
+    fn default() -> Self {
+        Self {
+            caret: None,
+            scroll_bar: None,
+        }
     }
+}
+
+impl<C: Copy> AreaStyle<C> for AreaColors<C> {
+    fn caret_color(&self, text: C) -> C {
+        self.caret.unwrap_or(text)
+    }
+
+    fn scroll_bar(&self) -> Option<(C, C)> {
+        self.scroll_bar
+    }
+}
+
+/// Which of a field's lines are shown, when it has more than it shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scrolled {
+    pub first: u16,
+    pub shown: u16,
+    pub total: u16,
 }
 
 /// Editable text, drawn as the lines its field broke it into, with a caret.
@@ -45,8 +87,10 @@ pub struct TextField<'a, F: Font, const N: usize, K = ()> {
     pub line_height: u32,
     /// The caret, relative to the origin.
     pub caret: Option<Rectangle>,
-    /// What color the caret is.
-    pub caret_style: K,
+    /// Which lines are shown, when not all of them are.
+    pub scrolled: Option<Scrolled>,
+    /// The colors besides the text's.
+    pub style: K,
 }
 
 impl<F: Font, const N: usize, K: Clone> Clone for TextField<'_, F, N, K> {
@@ -60,7 +104,8 @@ impl<F: Font, const N: usize, K: Clone> Clone for TextField<'_, F, N, K> {
             lines: self.lines.clone(),
             line_height: self.line_height,
             caret: self.caret.clone(),
-            caret_style: self.caret_style.clone(),
+            scrolled: self.scrolled,
+            style: self.style.clone(),
         }
     }
 }
@@ -73,7 +118,7 @@ impl<F: Font, const N: usize, K> TextField<'_, F, N, K> {
         origin: Point,
     ) where
         F: FontRender<C>,
-        K: CaretStyle<C>,
+        K: AreaStyle<C>,
     {
         let bounds = Rectangle::new(origin, self.size);
         if self.size.area() == 0 || !bounds.intersects(&render_target.clip_rect()) {
@@ -114,10 +159,31 @@ impl<F: Font, const N: usize, K> TextField<'_, F, N, K> {
         if let Some(caret) = &self.caret {
             render_target.fill(
                 LinearTransform::default(),
-                &SolidBrush::new(self.caret_style.caret_color(*style)),
+                &SolidBrush::new(self.style.caret_color(*style)),
                 None,
                 &Rectangle::new(origin + caret.origin, caret.size),
             );
+        }
+        if let (Some(scrolled), Some((track, thumb))) = (self.scrolled, self.style.scroll_bar()) {
+            // Along the trailing edge, the thumb's share of the track the
+            // share of the lines shown.
+            let x = origin.x + self.size.width.saturating_sub(SCROLL_BAR_WIDTH) as i32;
+            let height = self.size.height;
+            let total = u32::from(scrolled.total.max(1));
+            let thumb_top = height * u32::from(scrolled.first) / total;
+            let thumb_length = (height * u32::from(scrolled.shown) / total).max(SCROLL_BAR_WIDTH);
+            for (top, length, color) in [(0, height, track), (thumb_top, thumb_length, thumb)] {
+                render_target.fill(
+                    LinearTransform::default(),
+                    &SolidBrush::new(color),
+                    None,
+                    &RoundedRectangle::new(
+                        Point::new(x, origin.y + top as i32),
+                        Size::new(SCROLL_BAR_WIDTH, length),
+                        SCROLL_BAR_WIDTH / 2,
+                    ),
+                );
+            }
         }
     }
 }
@@ -129,7 +195,7 @@ impl<F: Font, const N: usize, K> AnimatedJoin for TextField<'_, F, N, K> {
     }
 }
 
-impl<C: Copy, F: FontRender<C>, const N: usize, K: CaretStyle<C>> Render<C>
+impl<C: Copy, F: FontRender<C>, const N: usize, K: AreaStyle<C>> Render<C>
     for TextField<'_, F, N, K>
 {
     fn render(&self, render_target: &mut impl RenderTarget<ColorFormat = C>, style: &C) {
@@ -170,7 +236,8 @@ mod tests {
             lines: core::iter::once(0..2).collect(),
             line_height: 1,
             caret: Some(Rectangle::new(Point::new(2, 0), Size::new(1, 1))),
-            caret_style,
+            scrolled: None,
+            style: caret_style,
         }
     }
 
@@ -181,7 +248,11 @@ mod tests {
         assert_eq!(buffer.text[0][..3], ['a', 'b', 'x']);
 
         let mut buffer = FixedTextBuffer::<4, 1>::default();
-        field(CaretColor('|')).render(&mut buffer, &'x');
+        field(AreaColors {
+            caret: Some('|'),
+            scroll_bar: None,
+        })
+        .render(&mut buffer, &'x');
         assert_eq!(buffer.text[0][..3], ['a', 'b', '|']);
     }
 }

@@ -7,12 +7,12 @@ use embedded_touch::{Phase, Touch};
 use crate::{
     animation::Animation,
     event::{Event, EventContext, EventResult, TouchResult},
-    focus::{FocusKey, Seek, SeekResult},
+    focus::{FocusAction, FocusGroup, FocusKey, Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{
         Dimensions, Point, ProposedDimension, ProposedDimensions, Size, geometry::Rectangle,
     },
-    render::{Animate, Capsule, Offset, ScrollRenderable},
+    render::{Animate, Capsule, ContentShape, Offset, ScrollRenderable},
     transition::Opacity,
     view::{ViewLayout, ViewMarker},
 };
@@ -127,6 +127,7 @@ pub struct ScrollView<Inner> {
     direction: ScrollDirection,
     initial_pin_to_end: bool,
     focus_margin: u32,
+    scroll_step: u32,
     short_content_at_end: bool,
 }
 
@@ -140,8 +141,21 @@ impl<Inner: ViewMarker> ScrollView<Inner> {
             direction: ScrollDirection::default(),
             initial_pin_to_end: false,
             focus_margin: 0,
+            scroll_step: 0,
             short_content_at_end: false,
         }
+    }
+
+    /// Steps through a focused element longer than the view, this far at a
+    /// time, before focus moves on from it.
+    ///
+    /// Moving focus scrolls by `step` toward the focused element's far edge
+    /// while that edge is out of view, so all of it is seen; once it is in
+    /// view, focus moves on. Zero, the default, moves focus on at once.
+    #[must_use]
+    pub fn with_scroll_step(mut self, step: u32) -> Self {
+        self.scroll_step = step;
+        self
     }
 
     /// Keeps this much of the content beyond the focused element in view
@@ -271,6 +285,9 @@ pub struct ScrollViewState<InnerState> {
     follows_focus: bool,
     /// The key of the element focus was last found on.
     focused_key: Option<FocusKey>,
+    /// The shape of the focused element within the content, and its group.
+    focused_shape: ContentShape,
+    focused_group: FocusGroup,
 }
 
 /// Whether an offset leaves the content pinned to its end along each axis.
@@ -286,6 +303,102 @@ fn pinning_for(offset: Point, scroll_size: Size, inner_size: Size) -> ContentPin
 }
 
 impl<Inner> ScrollView<Inner> {
+    /// Where `frame`, a shape within the content, is on screen, with the
+    /// focus margin around it.
+    fn focus_frame<R>(&self, frame: &Rectangle, render_tree: &ScrollRenderable<R>) -> Rectangle {
+        let margin = self.focus_margin as i32;
+        Rectangle::new(
+            frame.origin + render_tree.offset() + render_tree.inner.offset
+                - Point::new(margin, margin),
+            Size::new(
+                frame.size.width + 2 * self.focus_margin,
+                frame.size.height + 2 * self.focus_margin,
+            ),
+        )
+    }
+
+    /// Scrolls to `offset`, kept within the content. Returns whether the
+    /// view moved.
+    fn scroll_to<R, S>(
+        &self,
+        mut offset: Point,
+        context: &EventContext,
+        render_tree: &mut ScrollRenderable<R>,
+        state: &mut ScrollViewState<S>,
+    ) -> bool {
+        // The margin never scrolls past the content's edges.
+        let (scroll_size, inner_size) = (render_tree.scroll_size, render_tree.inner_size);
+        let permitted = Point::new(
+            inner_size.width.saturating_sub(scroll_size.width) as i32,
+            inner_size.height.saturating_sub(scroll_size.height) as i32,
+        );
+        offset.x = offset.x.clamp(-permitted.x, 0);
+        offset.y = offset.y.clamp(-permitted.y, 0);
+        if offset == state.scroll_offset {
+            return false;
+        }
+        context.request_redraw();
+        state.scroll_offset = offset;
+        state.content_pinning = pinning_for(offset, scroll_size, inner_size);
+        *render_tree.offset_mut() = offset + self.content_shift(scroll_size, inner_size);
+        let (horizontal_bar, vertical_bar) =
+            self.scroll_bars(Point::zero(), scroll_size, inner_size, offset);
+        render_tree.set_bars(horizontal_bar, vertical_bar);
+        true
+    }
+
+    /// Scrolls a step toward the focused element's far edge in the
+    /// direction of `action`, while that edge is out of view, in place of
+    /// moving focus on. Returns `None` once the edge is in view.
+    ///
+    /// The step is taken before the focused element sees the event, so an
+    /// element that keeps Next and Previous for itself while captive gets
+    /// them only once its edge is in view.
+    fn step_through<R, S>(
+        &self,
+        action: FocusAction,
+        context: &EventContext,
+        render_tree: &mut ScrollRenderable<R>,
+        state: &mut ScrollViewState<S>,
+    ) -> Option<EventResult> {
+        let step = self.scroll_step as i32;
+        if step == 0
+            || state.interaction != ScrollInteraction::Idle
+            || self.direction == ScrollDirection::Horizontal
+        {
+            return None;
+        }
+        let frame = self.focus_frame(&state.focused_shape.bounding_box()?, render_tree);
+        let view = render_tree.bounds();
+        let mut offset = state.scroll_offset;
+        match action {
+            FocusAction::Next => {
+                let hidden = frame.y_end() - view.y_end();
+                if hidden <= 0 {
+                    return None;
+                }
+                offset.y -= hidden.min(step);
+            }
+            FocusAction::Previous => {
+                let hidden = view.origin.y - frame.origin.y;
+                if hidden <= 0 {
+                    return None;
+                }
+                offset.y += hidden.min(step);
+            }
+            _ => return None,
+        }
+        self.scroll_to(offset, context, render_tree, state)
+            .then(|| EventResult::Handled {
+                shape: state
+                    .focused_shape
+                    .clone()
+                    .with_offset(render_tree.offset() + render_tree.inner.offset),
+                group: state.focused_group,
+                key: state.focused_key,
+            })
+    }
+
     /// Where content shorter than the view is moved to, within the view.
     fn content_shift(&self, scroll_size: Size, inner_size: Size) -> Point {
         if !self.short_content_at_end {
@@ -343,6 +456,8 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             content_pinning,
             follows_focus: true,
             focused_key: None,
+            focused_shape: ContentShape::Empty,
+            focused_group: crate::focus::GROUP_0,
         }
     }
 
@@ -509,6 +624,10 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             group,
         } = event
         {
+            if let Some(result) = self.step_through(*focus_event, context, render_tree, state) {
+                return result;
+            }
+
             // Route focus event to inner view
             let mut result = self.inner.handle_event(
                 &Event::Focus {
@@ -522,11 +641,13 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                 focus,
             );
 
-            if let EventResult::Handled { shape, key, .. } = &mut result
+            if let EventResult::Handled {
+                shape,
+                key,
+                group: found_group,
+            } = &mut result
                 && let Some(frame) = shape.bounding_box()
             {
-                use crate::focus::FocusAction;
-
                 // Moving focus keeps the focused element in view, whether by
                 // navigating or by focus landing on a different element.
                 // Acquiring focus in place, as a rebuild does, follows it too,
@@ -534,6 +655,8 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                 let navigating = matches!(focus_event, FocusAction::Next | FocusAction::Previous)
                     || *key != state.focused_key;
                 state.focused_key = *key;
+                state.focused_shape = shape.clone();
+                state.focused_group = *found_group;
                 if navigating {
                     state.follows_focus = true;
                 }
@@ -543,26 +666,23 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
 
                 if should_auto_scroll {
                     let scroll_view_frame = render_tree.bounds();
-                    let inner_offset = render_tree.offset();
-                    let margin = self.focus_margin as i32;
-
-                    let target_frame = Rectangle::new(
-                        frame.origin + inner_offset + render_tree.inner.offset
-                            - Point::new(margin, margin),
-                        Size::new(
-                            frame.size.width + 2 * self.focus_margin,
-                            frame.size.height + 2 * self.focus_margin,
-                        ),
-                    );
+                    let target_frame = self.focus_frame(&frame, render_tree);
 
                     let mut new_offset = state.scroll_offset;
 
-                    // Adjust vertical offset
-                    if target_frame.origin.y < scroll_view_frame.origin.y {
-                        // Target is above visible area
+                    // Adjust vertical offset. An element taller than the view
+                    // shows the edge nearest where it was out of view.
+                    let above = target_frame.origin.y < scroll_view_frame.origin.y;
+                    let below = target_frame.y_end() > scroll_view_frame.y_end();
+                    if target_frame.size.height > scroll_view_frame.size.height {
+                        if above && !below {
+                            new_offset.y += scroll_view_frame.y_end() - target_frame.y_end();
+                        } else if below && !above {
+                            new_offset.y -= target_frame.origin.y - scroll_view_frame.origin.y;
+                        }
+                    } else if above {
                         new_offset.y += scroll_view_frame.origin.y - target_frame.origin.y;
-                    } else if target_frame.y_end() > scroll_view_frame.y_end() {
-                        // Target is below visible area
+                    } else if below {
                         new_offset.y -= target_frame.y_end() - scroll_view_frame.y_end();
                     }
 
@@ -575,26 +695,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                         new_offset.x -= target_frame.x_end() - scroll_view_frame.x_end();
                     }
 
-                    // The margin never scrolls past the content's edges.
-                    let (scroll_size, inner_size) =
-                        (render_tree.scroll_size, render_tree.inner_size);
-                    let permitted = Point::new(
-                        inner_size.width.saturating_sub(scroll_size.width) as i32,
-                        inner_size.height.saturating_sub(scroll_size.height) as i32,
-                    );
-                    new_offset.x = new_offset.x.clamp(-permitted.x, 0);
-                    new_offset.y = new_offset.y.clamp(-permitted.y, 0);
-
-                    if new_offset != state.scroll_offset {
-                        context.request_redraw();
-                        state.scroll_offset = new_offset;
-                        state.content_pinning = pinning_for(new_offset, scroll_size, inner_size);
-                        *render_tree.offset_mut() =
-                            new_offset + self.content_shift(scroll_size, inner_size);
-                        let (horizontal_bar, vertical_bar) =
-                            self.scroll_bars(Point::zero(), scroll_size, inner_size, new_offset);
-                        render_tree.set_bars(horizontal_bar, vertical_bar);
-                    }
+                    self.scroll_to(new_offset, context, render_tree, state);
                 }
 
                 // Always adjust shape with offset so parent views see correct position

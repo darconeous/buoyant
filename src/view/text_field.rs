@@ -411,7 +411,8 @@ impl<'a, const N: usize, F: Font, L, S, ViewFn> TextField<'a, N, F, L, S, ViewFn
             max_lines: self.max_lines,
             caret_width: self.caret_width,
             active: status.active,
-            caret_style: (),
+            style: (),
+            scroll_bar_room: 0,
         }
     }
 }
@@ -659,13 +660,25 @@ pub struct TextArea<'a, const N: usize, F: Font, K = ()> {
     max_lines: u16,
     caret_width: u32,
     active: bool,
-    caret_style: K,
+    style: K,
+    /// How much width the scroll bar takes when the text needs one.
+    scroll_bar_room: u32,
 }
 
+/// The space between a text field's lines and its scroll bar.
+const SCROLL_BAR_GAP: u32 = 7;
+
 impl<'a, const N: usize, F: Font> TextArea<'a, N, F> {
-    /// Draws the caret in `color` rather than in the text's color.
+    /// Draws the caret, and a scroll bar for text longer than the area, in
+    /// `colors`.
+    ///
+    /// The bar takes room along the trailing edge only while the text needs
+    /// it.
     #[must_use]
-    pub fn caret_color<C>(self, color: C) -> TextArea<'a, N, F, render::CaretColor<C>> {
+    pub fn colors<C>(
+        self,
+        colors: render::AreaColors<C>,
+    ) -> TextArea<'a, N, F, render::AreaColors<C>> {
         TextArea {
             buffer: self.buffer,
             font: self.font,
@@ -673,7 +686,12 @@ impl<'a, const N: usize, F: Font> TextArea<'a, N, F> {
             max_lines: self.max_lines,
             caret_width: self.caret_width,
             active: self.active,
-            caret_style: render::CaretColor(color),
+            scroll_bar_room: if colors.scroll_bar.is_some() {
+                render::text_field::SCROLL_BAR_WIDTH + SCROLL_BAR_GAP
+            } else {
+                0
+            },
+            style: colors,
         }
     }
 }
@@ -694,6 +712,7 @@ pub struct TextAreaLayout {
     lines: heapless::Vec<Range<u16>, MAX_VISIBLE_LINES>,
     line_height: u32,
     caret: Option<Rectangle>,
+    scrolled: Option<render::Scrolled>,
 }
 
 impl<'a, const N: usize, F: Font, K: Clone> ViewMarker for TextArea<'a, N, F, K> {
@@ -735,6 +754,16 @@ impl<C: ?Sized, const N: usize, F: Font, K: Clone> ViewLayout<C> for TextArea<'_
                     + self.caret_width
             }
         };
+        // Text longer than the area leaves room for the scroll bar beside it.
+        let wrap = if self.scroll_bar_room > 0
+            && EditLines::new(text, width, &metrics)
+                .nth(usize::from(self.max_lines))
+                .is_some()
+        {
+            width.saturating_sub(self.scroll_bar_room)
+        } else {
+            width
+        };
 
         // The line holding the cursor, where a cursor at a break begins the
         // next line, and how far into it the cursor is.
@@ -742,7 +771,7 @@ impl<C: ?Sized, const N: usize, F: Font, K: Clone> ViewLayout<C> for TextArea<'_
         let mut line_count = 0;
         let mut caret = None;
         let mut last = 0..0;
-        for (index, line) in EditLines::new(text, width, &metrics).enumerate() {
+        for (index, line) in EditLines::new(text, wrap, &metrics).enumerate() {
             line_count = index + 1;
             if caret.is_none() && cursor < line.end {
                 caret = Some((index, advance_of(&text[line.start..cursor], &metrics)));
@@ -766,7 +795,7 @@ impl<C: ?Sized, const N: usize, F: Font, K: Clone> ViewLayout<C> for TextArea<'_
         }
         *first_line = first as u16;
 
-        let lines = EditLines::new(text, width, &metrics)
+        let lines = EditLines::new(text, wrap, &metrics)
             .skip(first)
             .take(visible)
             .map(|line| line.start as u16..line.end as u16)
@@ -774,7 +803,7 @@ impl<C: ?Sized, const N: usize, F: Font, K: Clone> ViewLayout<C> for TextArea<'_
         let caret = self.active.then(|| {
             Rectangle::new(
                 Point::new(
-                    caret_x.min(width.saturating_sub(self.caret_width)) as i32,
+                    caret_x.min(wrap.saturating_sub(self.caret_width)) as i32,
                     ((caret_line - first) as u32 * line_height) as i32,
                 ),
                 Size::new(self.caret_width, line_height),
@@ -787,6 +816,11 @@ impl<C: ?Sized, const N: usize, F: Font, K: Clone> ViewLayout<C> for TextArea<'_
                 lines,
                 line_height,
                 caret,
+                scrolled: (line_count > visible).then_some(render::Scrolled {
+                    first: first as u16,
+                    shown: visible as u16,
+                    total: line_count as u16,
+                }),
             },
             resolved_size: size.into(),
         }
@@ -809,7 +843,8 @@ impl<C: ?Sized, const N: usize, F: Font, K: Clone> ViewLayout<C> for TextArea<'_
             lines: layout.lines.clone(),
             line_height: layout.line_height,
             caret: layout.caret.clone(),
-            caret_style: self.caret_style.clone(),
+            scrolled: layout.scrolled,
+            style: self.style.clone(),
         }
     }
 

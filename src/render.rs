@@ -50,7 +50,7 @@ pub use shape::Rect;
 pub use shape::RoundedRect;
 pub use shape::StrokedShape;
 pub use text::Text;
-pub use text_field::{CaretColor, CaretStyle, TextField};
+pub use text_field::{AreaColors, AreaStyle, Scrolled, TextField};
 pub use transform::Transform;
 pub use transition_option::TransitionOption;
 

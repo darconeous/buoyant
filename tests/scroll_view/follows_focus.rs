@@ -164,3 +164,59 @@ fn following_focus_away_from_the_end_unpins_the_content() {
     assert_eq!(app.focused_key(), Some(FocusKey(0)));
     assert_eq!(span(app.focus_shape()).0, 0);
 }
+
+const TALL: u32 = 250;
+const STEP: u32 = 30;
+
+/// Five rows, the second taller than the view.
+fn with_tall_row(state: &State) -> impl View<(), State> + use<> {
+    let keys = state.rows.clone();
+    ScrollView::new(
+        ForEach::<8>::new_vertical(&SLOTS[..keys.len()], |&slot| {
+            let height = if slot == 1 { TALL } else { ROW };
+            Button::new(|_: &mut State| {}, |_| Rectangle).frame_sized(50, height)
+        })
+        .keyed(move |&slot| FocusKey(keys[slot])),
+    )
+    .with_bar_visibility(ScrollBarVisibility::Never)
+    .with_scroll_step(STEP)
+}
+
+#[test]
+fn a_row_taller_than_the_view_is_stepped_through_going_down() {
+    let mut app = app(with_rows(5), with_tall_row);
+    assert!(app.focus_forward().is_handled());
+    assert_eq!(app.next().key(), Some(FocusKey(1)));
+    // Entered from above: its top is at the top.
+    assert_eq!(span(app.focus_shape()), (0, TALL as i32));
+
+    let mut bottom = TALL as i32;
+    while bottom > VIEW as i32 {
+        assert_eq!(app.next().key(), Some(FocusKey(1)));
+        let (_, now) = span(app.focus_shape());
+        assert_eq!(now, (bottom - STEP as i32).max(VIEW as i32));
+        bottom = now;
+    }
+    // Its last line is in view, so focus moves on.
+    assert_eq!(app.next().key(), Some(FocusKey(2)));
+}
+
+#[test]
+fn a_row_taller_than_the_view_is_stepped_through_going_up() {
+    let mut app = app(with_rows(5), with_tall_row);
+    assert!(app.focus_forward().is_handled());
+    while app.focused_key() != Some(FocusKey(2)) {
+        assert!(app.next().is_handled());
+    }
+    assert_eq!(app.previous().key(), Some(FocusKey(1)));
+    // Entered from below: its bottom is at the bottom.
+    assert_eq!(span(app.focus_shape()).1, VIEW as i32);
+
+    let mut steps = 0;
+    while span(app.focus_shape()).0 < 0 {
+        assert_eq!(app.previous().key(), Some(FocusKey(1)));
+        steps += 1;
+    }
+    assert_eq!(steps, (TALL - VIEW).div_ceil(STEP));
+    assert_eq!(app.previous().key(), Some(FocusKey(0)));
+}

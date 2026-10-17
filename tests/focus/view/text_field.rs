@@ -193,6 +193,56 @@ fn a_long_draft_scrolls_to_keep_the_cursor_in_view() {
     assert_eq!(shown(&app).1, Some(caret(0, 0)));
 }
 
+type BarTree = render::TextField<'static, CharacterBufferFont, 16, render::AreaColors<()>>;
+
+/// A one-line field with a scroll bar.
+fn with_bar(state: &State) -> impl View<(), State> + ViewMarker<Renderables = BarTree> + use<> {
+    TextField::new(&state.drafts[0], &FONT, |s: &mut State| s.drafts.get_mut(0))
+        .with_max_lines(1)
+        .with_caret_width(1)
+        .with_label(|_, area| {
+            area.colors(render::AreaColors {
+                caret: None,
+                scroll_bar: Some(((), ())),
+            })
+        })
+}
+
+#[test]
+fn text_longer_than_the_field_makes_room_for_the_scroll_bar() {
+    // At its full width of 14, this takes two lines; the bar's room of 10
+    // leaves 4 for the text beside it.
+    let mut state = State::default();
+    state.drafts[0] = "aaa bbb ccc ddd".into();
+    let mut app = App::new(state, Size::new(14, 3), with_bar)
+        .with_roles(Role::Button | Role::TextEntry)
+        .with_focus_binding(|s| &mut s.focus);
+    app.finalize_view();
+    let tree = app.render_trees().target();
+    assert_eq!(tree.size.width, 14);
+    let shown: Vec<&str> = tree
+        .lines
+        .iter()
+        .map(|range| &tree.text[range.start as usize..range.end as usize])
+        .collect();
+    assert_eq!(shown, ["ddd"]);
+    assert_eq!(
+        tree.scrolled,
+        Some(render::Scrolled {
+            first: 3,
+            shown: 1,
+            total: 4,
+        })
+    );
+
+    // Text that fits shows no bar and keeps the whole width.
+    app.state_mut().drafts[0] = "aaa bbb".into();
+    app.finalize_view();
+    let tree = app.render_trees().target();
+    assert_eq!(tree.scrolled, None);
+    assert_eq!(tree.lines.len(), 1);
+}
+
 const FIELD: FocusKey = FocusKey(1);
 
 fn chats(state: &State) -> impl View<(), State> + use<> {
