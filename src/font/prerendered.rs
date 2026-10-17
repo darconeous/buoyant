@@ -53,10 +53,21 @@ pub struct Face {
 impl Face {
     #[must_use]
     pub fn glyph(&self, character: char) -> Option<&GlyphEntry> {
+        // Glyphs are sorted, and tables usually open with a run of
+        // consecutive characters (printable ASCII): within that run a
+        // character's index is its distance from the first.
+        // Below the first character this wraps to an index past the end.
+        let first = self.glyphs.first().map_or(0, |g| u32::from(g.character));
+        let index = u32::from(character).wrapping_sub(first) as usize;
         self.glyphs
-            .binary_search_by_key(&character, |g| g.character)
-            .ok()
-            .and_then(|i| self.glyphs.get(i))
+            .get(index)
+            .filter(|g| g.character == character)
+            .or_else(|| {
+                self.glyphs
+                    .binary_search_by_key(&character, |g| g.character)
+                    .ok()
+                    .and_then(|i| self.glyphs.get(i))
+            })
             .or(self.fallback.as_ref())
     }
 
@@ -164,19 +175,21 @@ impl<C: Interpolate + Copy> FontRender<C> for PrerenderedFont {
         };
         let origin = offset + Point::new(i32::from(glyph.left), i32::from(glyph.top));
         let width = u32::from(glyph.width);
+        // Each of the 16 coverage levels blended once, rather than once a
+        // pixel. `None` is not drawn.
+        let shades: [Option<C>; 16] = core::array::from_fn(|c| match (c, background_color) {
+            (0, _) => None,
+            (15, _) => Some(color),
+            (c, Some(background)) => Some(C::interpolate(background, color, c as u8 * 17)),
+            (c, None) => (c >= 8).then_some(color),
+        });
         let pixels = (0..u32::from(glyph.height)).flat_map(move |y| {
             (0..width).filter_map(move |x| {
-                let coverage = face.coverage_at(glyph.start + y * width + x);
-                let color = match (coverage, background_color) {
-                    (0, _) => return None,
-                    (15, _) => color,
-                    (c, Some(background)) => C::interpolate(background, color, c * 17),
-                    (c, None) if c >= 8 => color,
-                    _ => return None,
-                };
-                Some(Pixel {
-                    point: origin + Point::new(x as i32, y as i32),
-                    color,
+                shades[usize::from(face.coverage_at(glyph.start + y * width + x))].map(|color| {
+                    Pixel {
+                        point: origin + Point::new(x as i32, y as i32),
+                        color,
+                    }
                 })
             })
         });

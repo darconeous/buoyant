@@ -106,10 +106,40 @@ mod embedded_graphics {
         target: &'a mut T,
         color: T::Color,
         background_color: T::Color,
+        /// Each gray level blended once, for templates with at most 16
+        /// levels (Gray2 and Gray4), rather than once a pixel.
+        shades: Option<[Option<T::Color>; 16]>,
         _template_color: PhantomData<C>,
     }
 
-    impl<T: DrawTarget<Color: Interpolate>, C: GrayColor> TemplatedTarget<'_, T, C> {
+    impl<'a, T: DrawTarget<Color: Interpolate>, C: GrayColor> TemplatedTarget<'a, T, C> {
+        fn new(target: &'a mut T, color: T::Color, background_color: T::Color) -> Self {
+            let shades = (C::WHITE.luma() < 16).then(|| {
+                core::array::from_fn(|luma| {
+                    let luma = luma as u8;
+                    if luma > C::WHITE.luma() {
+                        return None;
+                    }
+                    let alpha = (u16::from(luma) * 255 / u16::from(C::WHITE.luma())) as u8;
+                    (luma != 0).then(|| Interpolate::interpolate(background_color, color, alpha))
+                })
+            });
+            Self {
+                target,
+                color,
+                background_color,
+                shades,
+                _template_color: PhantomData,
+            }
+        }
+
+        fn shade(&self, gray: C) -> Option<T::Color> {
+            match &self.shades {
+                Some(shades) => shades[usize::from(gray.luma()) & 15],
+                None => Self::template_color(gray, self.background_color, self.color),
+            }
+        }
+
         fn template_color(
             color: C,
             background: T::Color,
@@ -142,9 +172,14 @@ mod embedded_graphics {
         where
             I: IntoIterator<Item = embedded_graphics::prelude::Pixel<Self::Color>>,
         {
+            let shades = self.shades;
+            let (background_color, color) = (self.background_color, self.color);
             let pixels = pixels.into_iter().filter_map(|p| {
-                Self::template_color(p.1, self.background_color, self.color)
-                    .map(|color| Pixel(p.0, color))
+                match &shades {
+                    Some(shades) => shades[usize::from(p.1.luma()) & 15],
+                    None => Self::template_color(p.1, background_color, color),
+                }
+                .map(|color| Pixel(p.0, color))
             });
             self.target.draw_iter(pixels)
         }
@@ -169,14 +204,14 @@ mod embedded_graphics {
             area: &embedded_graphics::primitives::Rectangle,
             color: Self::Color,
         ) -> Result<(), Self::Error> {
-            if let Some(color) = Self::template_color(color, self.background_color, self.color) {
+            if let Some(color) = self.shade(color) {
                 self.target.fill_solid(area, color)?;
             }
             Ok(())
         }
 
         fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
-            if let Some(color) = Self::template_color(color, self.background_color, self.color) {
+            if let Some(color) = self.shade(color) {
                 self.target.clear(color)?;
             }
             Ok(())
@@ -280,12 +315,7 @@ mod embedded_graphics {
         let mut surface = render_target.raw_surface(origin);
         let mut draw_target = surface.draw_target();
         draw_image(
-            &mut TemplatedTarget::<_, I::Color> {
-                color,
-                target: &mut draw_target,
-                background_color,
-                _template_color: PhantomData,
-            },
+            &mut TemplatedTarget::<_, I::Color>::new(&mut draw_target, color, background_color),
             image,
         );
     }
