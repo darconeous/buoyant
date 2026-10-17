@@ -47,6 +47,14 @@ impl FocusAction {
     }
 }
 
+/// A stable name for a focusable element, chosen by the application.
+///
+/// A key identifies what is focused independently of where it sits in the
+/// view tree, so focus can follow an element when its position changes.
+/// Keys need only be unique among the elements mounted at the same time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FocusKey(pub u32);
+
 /// A trait for focus tree types that can be initialized to either the first or last element.
 ///
 /// This is roughly equivalent to `Default` but supports bidirectional navigation

@@ -9,7 +9,7 @@ use core::time::Duration;
 use crate::{
     environment::DefaultEnvironment,
     event::{Event, EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusAction, FocusDirection, Role, RoleSet},
+    focus::{DefaultFocus, FocusAction, FocusDirection, FocusGroup, FocusKey, Role, RoleSet},
     primitives::{Point, Size, transform::LinearTransform},
     render::{AnimatedJoin, AnimationDomain, ContentShape, Render},
     render_target::{RenderTarget, SolidBrush, Stroke},
@@ -51,6 +51,10 @@ where
     env: DefaultEnvironment,
     /// Current focus shape for overlay rendering.
     focus_shape: ContentShape,
+    /// The key of the focused element, when it has one.
+    focused_key: Option<FocusKey>,
+    /// The focus group the focused element belongs to.
+    focus_group: FocusGroup,
     roles: RoleSet,
     size: Size,
     elapsed: Duration,
@@ -124,6 +128,8 @@ where
             env,
             roles,
             focus_shape: ContentShape::Empty,
+            focused_key: None,
+            focus_group: crate::focus::GROUP_0,
             size,
             elapsed: Duration::default(),
             requires_redraw: true,
@@ -181,6 +187,12 @@ where
         &self.focus_shape
     }
 
+    /// The focus group of the currently focused element.
+    #[must_use]
+    pub fn focus_group(&self) -> FocusGroup {
+        self.focus_group
+    }
+
     /// Returns mutable references to both source and target render trees.
     #[must_use]
     pub fn render_trees(&self) -> &Trees<V::Renderables> {
@@ -234,9 +246,8 @@ where
             &mut self.view_state,
         );
 
-        // reobtain focus after rebuild
-        let result = self.focus_forward();
-        self.update_focus_shape(&result);
+        // Reobtain focus after rebuild, in the group that holds it.
+        _ = self.focus_forward_group(self.focus_group);
 
         self.requires_rebuild = false;
         self.requires_redraw = true;
@@ -307,10 +318,37 @@ where
         }
     }
 
-    /// Updates the focus shape from an event result.
-    fn update_focus_shape(&mut self, result: &EventResult) {
-        if let EventResult::Handled { shape, .. } = result {
-            self.focus_shape = shape.clone();
+    /// Records what an event did to focus.
+    ///
+    /// Focus events say where focus now is, including that there is none
+    /// when acquiring it failed. Other events only report focus when they
+    /// return a focused shape: a key handled without one leaves focus as it
+    /// was.
+    fn update_focus(&mut self, event: &Event, result: &EventResult) {
+        let is_focus_event = matches!(event, Event::Focus { .. });
+        match result {
+            EventResult::Handled { shape, group, key } if *shape != ContentShape::Empty => {
+                self.focus_shape = shape.clone();
+                self.focused_key = *key;
+                self.focus_group = *group;
+            }
+            EventResult::Handled { .. } if is_focus_event => {
+                self.focus_shape = ContentShape::Empty;
+                self.focused_key = None;
+            }
+            EventResult::Deferred
+                if matches!(
+                    event,
+                    Event::Focus {
+                        action: FocusAction::Focus(_),
+                        ..
+                    }
+                ) =>
+            {
+                self.focus_shape = ContentShape::Empty;
+                self.focused_key = None;
+            }
+            _ => {}
         }
     }
 }
@@ -337,7 +375,7 @@ where
             &mut self.focus_tree,
         );
 
-        self.update_focus_shape(&result);
+        self.update_focus(&event, &result);
 
         if context.view_rebuild_requested.get() {
             self.requires_rebuild = true;
@@ -346,6 +384,10 @@ where
             self.requires_redraw = true;
         }
         result
+    }
+
+    fn focused_key(&self) -> Option<FocusKey> {
+        self.focused_key
     }
 
     fn send_touch(&mut self, touch: &Touch) {
@@ -365,15 +407,14 @@ where
                 // Tear down the previously focused element.
                 _ = self.send(Event::Focus {
                     action: FocusAction::Teardown,
-                    group: crate::focus::GROUP_0,
+                    group: self.focus_group,
                 });
                 // Install the new focus tree and reassert focus forward.
                 self.focus_tree = new_focus;
-                let reassert = self.send(Event::Focus {
+                _ = self.send(Event::Focus {
                     action: FocusAction::Focus(FocusDirection::Forward),
                     group: crate::focus::GROUP_0,
                 });
-                self.update_focus_shape(&reassert);
             }
             TouchResult::Handled | TouchResult::Deferred => {}
         }

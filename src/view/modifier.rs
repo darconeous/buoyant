@@ -17,6 +17,7 @@ mod exclusive_focus;
 mod fixed_frame;
 mod fixed_size;
 mod flex_frame;
+mod focus_key;
 mod foreground_color;
 mod geometry_group;
 mod hidden;
@@ -49,6 +50,7 @@ use fixed::traits::ToFixed;
 pub(crate) use fixed_frame::FixedFrame;
 pub(crate) use fixed_size::FixedSize;
 pub(crate) use flex_frame::FlexFrame;
+pub(crate) use focus_key::FocusKeyed;
 pub(crate) use foreground_color::ForegroundStyle;
 pub(crate) use geometry_group::GeometryGroup;
 pub(crate) use hidden::Hidden;
@@ -66,7 +68,7 @@ pub(crate) use unfocusable::Unfocusable;
 use crate::{
     animation::Animation,
     event::Event,
-    focus::FocusGroup,
+    focus::{FocusGroup, FocusKey},
     layout::{Alignment, HorizontalAlignment, VerticalAlignment},
     primitives::{Point, UnitPoint},
     view::{ViewMarker, modifier::map_event::MapEvent, shape::Shape},
@@ -452,6 +454,17 @@ pub trait ViewModifier: Sized + ViewMarker {
     /// Any non-focus events handled by the subtree will inherit the focus group.
     fn exclusive_focus(self, group: FocusGroup) -> ExclusiveFocus<Self> {
         ExclusiveFocus::new(self, group)
+    }
+
+    /// Names the focusable element with `key`, so the application can see
+    /// when it is focused and ask for it to be.
+    ///
+    /// Apply it to the element that takes focus, such as a [`Button`]. Each
+    /// key must be unique among the elements mounted at the same time.
+    ///
+    /// [`Button`]: crate::view::Button
+    fn focus_key(self, key: FocusKey) -> FocusKeyed<Self> {
+        FocusKeyed::new(self, key)
     }
 
     /// Creates a new coordinate space under which views are positioned relative to a

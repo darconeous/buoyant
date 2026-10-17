@@ -3,6 +3,7 @@ mod modifier {
     mod bound_focus;
     mod clip;
     mod content_shape;
+    mod focus_key;
     mod focus_touches;
     mod frame;
     mod hidden;

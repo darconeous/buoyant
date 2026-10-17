@@ -1,7 +1,7 @@
 use core::{cell::Cell, time::Duration};
 
 use crate::{
-    focus::{self, FocusAction, FocusGroup, RoleSet},
+    focus::{self, FocusAction, FocusGroup, FocusKey, RoleSet},
     primitives::Point,
     render::ContentShape,
 };
@@ -94,6 +94,8 @@ pub enum EventResult {
         shape: ContentShape,
         /// The group of the focused element
         group: FocusGroup,
+        /// The key of the focused element, when it has one.
+        key: Option<FocusKey>,
     },
     /// The event was not handled, or focus not obtained
     #[default]
@@ -107,6 +109,7 @@ impl EventResult {
         Self::Handled {
             shape: ContentShape::Empty,
             group: focus::GROUP_0,
+            key: None,
         }
     }
 
@@ -116,6 +119,7 @@ impl EventResult {
         Self::Handled {
             shape,
             group: focus::GROUP_0,
+            key: None,
         }
     }
 
@@ -130,6 +134,44 @@ impl EventResult {
         };
         *event_group = group;
         self
+    }
+
+    /// Returns a new [`EventResult`] naming `key` as the focused element.
+    ///
+    /// A key already set by a nearer element is kept, and a result without a
+    /// focused shape is left unnamed: nothing is focused there.
+    #[must_use]
+    pub fn with_key(mut self, key: FocusKey) -> Self {
+        if let Self::Handled {
+            shape,
+            key: event_key,
+            ..
+        } = &mut self
+            && *shape != ContentShape::Empty
+            && event_key.is_none()
+        {
+            *event_key = Some(key);
+        }
+        self
+    }
+
+    /// The key of the focused element, if the event was handled and the
+    /// element has one.
+    #[must_use]
+    pub const fn key(&self) -> Option<FocusKey> {
+        match self {
+            Self::Handled { key, .. } => *key,
+            Self::Deferred => None,
+        }
+    }
+
+    /// The group of the focused element, if the event was handled.
+    #[must_use]
+    pub const fn group(&self) -> Option<FocusGroup> {
+        match self {
+            Self::Handled { group, .. } => Some(*group),
+            Self::Deferred => None,
+        }
     }
 
     /// Returns true if the event was handled (not deferred).

@@ -2,7 +2,7 @@ use embedded_touch::{Tool, Touch};
 
 use crate::{
     event::{Event, EventResult, Key},
-    focus::{FocusAction, FocusDirection, FocusGroup},
+    focus::{FocusAction, FocusDirection, FocusGroup, FocusKey},
     primitives::Point,
 };
 
@@ -13,6 +13,9 @@ pub trait Harness {
 
     /// Sends a touch event to the view, reconciling focus if the view requests it.
     fn send_touch(&mut self, touch: &Touch);
+
+    /// The key of the focused element, when it has one.
+    fn focused_key(&self) -> Option<FocusKey>;
 
     /// Acquires focus, searching forward.
     ///
