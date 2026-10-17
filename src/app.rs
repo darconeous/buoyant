@@ -9,7 +9,10 @@ use core::time::Duration;
 use crate::{
     environment::DefaultEnvironment,
     event::{Event, EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusAction, FocusDirection, FocusGroup, FocusKey, Role, RoleSet},
+    focus::{
+        DefaultFocus, FocusAction, FocusDirection, FocusGroup, FocusKey, FocusState, Role, RoleSet,
+        Seek, SeekResult, SeekTarget,
+    },
     primitives::{Point, Size, transform::LinearTransform},
     render::{AnimatedJoin, AnimationDomain, ContentShape, Render},
     render_target::{RenderTarget, SolidBrush, Stroke},
@@ -55,6 +58,10 @@ where
     focused_key: Option<FocusKey>,
     /// The focus group the focused element belongs to.
     focus_group: FocusGroup,
+    /// Where the application keeps its [`FocusState`].
+    focus_binding: Option<fn(&mut S) -> &mut FocusState>,
+    /// A request made with [`focus`](Self::focus) without a binding.
+    focus_request: Option<FocusKey>,
     roles: RoleSet,
     size: Size,
     elapsed: Duration,
@@ -130,6 +137,8 @@ where
             focus_shape: ContentShape::Empty,
             focused_key: None,
             focus_group: crate::focus::GROUP_0,
+            focus_binding: None,
+            focus_request: None,
             size,
             elapsed: Duration::default(),
             requires_redraw: true,
@@ -152,6 +161,32 @@ where
     pub fn with_focus_at_end(mut self) -> Self {
         self.focus_tree = DefaultFocus::default_last();
         self
+    }
+
+    /// Keeps focus in application state, at the [`FocusState`] `binding`
+    /// returns.
+    ///
+    /// The app records there the key of the element focus settles on, and
+    /// acts on the requests made there. The binding is called afresh each
+    /// time, so it can reach wherever the state currently is, such as the top
+    /// screen of a navigation stack.
+    #[must_use]
+    pub fn with_focus_binding(mut self, binding: fn(&mut S) -> &mut FocusState) -> Self {
+        self.focus_binding = Some(binding);
+        self
+    }
+
+    /// Asks for focus to move to the element with `key`, and settles focus.
+    ///
+    /// This makes the same request as [`FocusState::request`]. Nothing
+    /// changes if the element is not in the view or an open modal keeps
+    /// focus from it.
+    pub fn focus(&mut self, key: FocusKey) {
+        match self.focus_binding {
+            Some(binding) => binding(&mut self.state).request(key),
+            None => self.focus_request = Some(key),
+        }
+        self.finalize_view();
     }
 
     /// Returns a reference to the application state.
@@ -228,8 +263,14 @@ where
         self.trees.swap();
         let (source_tree, target_tree) = self.trees.both_mut();
         source_tree.join_from(target_tree, &domain);
+        self.build_target();
+        self.settle_focus();
+        self.requires_rebuild = false;
+        self.requires_redraw = true;
+    }
 
-        // Create new view and target tree
+    /// Builds the view from the state, and lays it out into the target tree.
+    fn build_target(&mut self) {
         self.view = (self.view_fn)(&self.state);
         self.env = DefaultEnvironment::new(self.elapsed);
         let layout = self.view.layout(
@@ -238,24 +279,123 @@ where
             &mut self.state,
             &mut self.view_state,
         );
-        *target_tree = self.view.render_tree(
+        *self.trees.target_mut() = self.view.render_tree(
             &layout.sublayouts,
             Point::zero(),
             &self.env,
             &mut self.state,
             &mut self.view_state,
         );
+    }
 
-        // Reobtain focus after rebuild, in the group that holds it. When the
-        // path it was on leads nowhere now, as when a focused list emptied,
-        // search again from the start, so focus returns when content does.
-        if !self.focus_forward_group(self.focus_group).is_handled() {
+    /// Resolves focus in the built view, records it in the binding, and
+    /// rebuilds once more if views depending on focus need to follow it.
+    fn settle_focus(&mut self) {
+        let built_with = self.bound_focus();
+        let moved = self.resolve_focus();
+        self.bind_focus();
+        // Only views given the focused key through a binding depend on it.
+        let rebound = self.focus_binding.is_some() && self.focused_key != built_with;
+        if !moved && !rebound {
+            return;
+        }
+        // Focus is found again by key, so it stays put while views that
+        // depend on it take their new shape.
+        let settled = self.focused_key;
+        self.build_target();
+        self.resolve_focus();
+        self.bind_focus();
+        debug_assert_eq!(
+            self.focused_key, settled,
+            "focus moved again while settling"
+        );
+        self.requires_redraw = true;
+    }
+
+    /// Finds focus again in a newly built view, then acts on any request.
+    ///
+    /// Returns whether focus was moved rather than found where it was.
+    fn resolve_focus(&mut self) -> bool {
+        let mut moved = false;
+
+        // An open modal takes focus from anything outside it.
+        if self.seek(SeekTarget::Modal).is_found() {
+            self.move_focus(SeekTarget::Modal);
+            moved = true;
+        } else if !self.focus_forward_group(self.focus_group).is_handled() {
+            // Reobtain focus in the group that holds it. When the path it was
+            // on leads nowhere now, as when a focused list emptied, search
+            // again from the start, so focus returns when content does.
             self.focus_tree = DefaultFocus::default_first();
             _ = self.focus_forward_group(self.focus_group);
         }
 
-        self.requires_rebuild = false;
-        self.requires_redraw = true;
+        // A request for what is already focused changes nothing, and one that
+        // cannot be met leaves focus where it is.
+        let request = match self.focus_binding {
+            Some(binding) => binding(&mut self.state).take_request(),
+            None => self.focus_request.take(),
+        };
+        if let Some(key) = request
+            && Some(key) != self.focused_key
+            && self.seek(SeekTarget::Key(key)).is_found()
+        {
+            self.move_focus(SeekTarget::Key(key));
+            moved = true;
+        }
+        moved
+    }
+
+    /// Looks for `target` in the laid-out view.
+    fn seek(&self, target: SeekTarget) -> SeekResult<V::FocusTree> {
+        self.view.seek(
+            &Seek::new(target, self.roles),
+            self.trees.target(),
+            &self.view_state,
+            Some(&self.focus_tree),
+        )
+    }
+
+    /// Moves focus to `target`, which was found: the focused element is
+    /// torn down in its group, and the target acquires focus in its own.
+    fn move_focus(&mut self, target: SeekTarget) {
+        _ = self.send(Event::Focus {
+            action: FocusAction::Teardown,
+            group: self.focus_group,
+        });
+        // The path is taken after the teardown, so the parts of the old one
+        // it keeps, such as where a popover returns focus, are released.
+        let SeekResult::Found { tree, group } = self.seek(target) else {
+            debug_assert!(false, "a teardown hid the focus target");
+            return;
+        };
+        self.focus_tree = tree;
+        self.focus_group = group;
+        _ = self.focus_forward_group(group);
+    }
+
+    /// The key the application last saw focused.
+    fn bound_focus(&mut self) -> Option<FocusKey> {
+        self.focus_binding
+            .and_then(|binding| binding(&mut self.state).current())
+    }
+
+    /// Records the focused key in the application's binding.
+    fn bind_focus(&mut self) {
+        if let Some(binding) = self.focus_binding {
+            binding(&mut self.state).set_current(self.focused_key);
+        }
+    }
+
+    /// Whether focus has changed or been requested since it last settled.
+    fn focus_unsettled(&mut self) -> bool {
+        match self.focus_binding {
+            Some(binding) => {
+                let focus = binding(&mut self.state);
+                focus.pending().is_some() || focus.current() != self.focused_key
+            }
+            None => self.focus_request.is_some(),
+        }
     }
 
     /// Updates the display size.
@@ -265,12 +405,16 @@ where
     }
 
     /// Rebuilds the view and render trees if it was requested as a result of event
-    /// handling or tracked state changes.
+    /// handling or tracked state changes, and settles focus.
     ///
-    /// If no rebuild is pending, this method does nothing.
+    /// When it returns, focus is settled: requests have been acted on, the
+    /// binding holds the focused key, and views that depend on it have been
+    /// rebuilt. If nothing is pending, this method does nothing.
     pub fn finalize_view(&mut self) {
         if self.requires_rebuild {
             self.force_rebuild();
+        } else if self.focus_unsettled() {
+            self.settle_focus();
         }
     }
 

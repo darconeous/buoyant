@@ -3,6 +3,7 @@ use embedded_touch::Touch;
 use crate::{
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
+    focus::{Seek, SeekResult},
     layout::{LayoutDirection, ResolvedLayout},
     primitives::{Dimensions, Point, ProposedDimensions},
     transition::Opacity,
@@ -83,6 +84,16 @@ impl<Captures: ?Sized> ViewLayout<Captures> for Spacer {
         _focus: &mut Self::FocusTree,
     ) -> EventResult {
         EventResult::Deferred
+    }
+
+    fn seek(
+        &self,
+        _seek: &Seek,
+        _render_tree: &Self::Renderables,
+        _state: &Self::State,
+        _focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        SeekResult::Absent
     }
 
     fn handle_touch(

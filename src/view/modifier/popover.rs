@@ -3,7 +3,9 @@ use core::time::Duration;
 use crate::{
     animation::Animation,
     event::{Event, EventContext, EventResult, TouchResult},
-    focus::{BoundaryBehavior, DefaultFocus, FocusAction, FocusDirection},
+    focus::{
+        BoundaryBehavior, DefaultFocus, FocusAction, FocusDirection, Seek, SeekResult, SeekTarget,
+    },
     layout::{HorizontalAlignment, ResolvedLayout, VerticalAlignment},
     primitives::Point,
     render::{Animate, IntrinsicShape, TransitionOption},
@@ -495,6 +497,61 @@ where
                 &mut state.inner_state,
                 &mut focus.inner,
             ),
+        }
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        let inner_focus = focus.map(|focus| &focus.inner);
+        let open = self.overlay.as_ref().filter(|_| !state.dismissed);
+        let (Some(overlay_view), TransitionOption::Some { subtree, .. }, Some(overlay_state)) =
+            (open, &render_tree.1.subtree, state.overlay_state.as_ref())
+        else {
+            return self
+                .inner
+                .seek(seek, &render_tree.0, &state.inner_state, inner_focus)
+                .map(|inner| FocusTree {
+                    inner,
+                    overlay: None,
+                });
+        };
+
+        let overlay_focus = focus.and_then(|focus| focus.overlay.as_ref());
+        // A path into the overlay keeps where focus was in the inner view, so
+        // dismissing the overlay returns there.
+        let into_overlay = |overlay: Overlay::FocusTree| FocusTree {
+            inner: inner_focus
+                .cloned()
+                .unwrap_or_else(DefaultFocus::default_first),
+            overlay: Some(overlay),
+        };
+        // An overlay with nothing focusable still takes focus.
+        let enter = || match overlay_view.seek(
+            &seek.with_target(SeekTarget::Any),
+            subtree,
+            overlay_state,
+            None,
+        ) {
+            found @ SeekResult::Found { .. } => found.map(into_overlay),
+            _ => SeekResult::found(into_overlay(DefaultFocus::default_first())),
+        };
+
+        match (
+            seek.target,
+            overlay_view.seek(seek, subtree, overlay_state, overlay_focus),
+        ) {
+            (_, found @ SeekResult::Found { .. }) => found.map(into_overlay),
+            (_, SeekResult::Current) => SeekResult::Current,
+            // Focus is already in this overlay, and no modal inside it is open.
+            (SeekTarget::Modal, _) if overlay_focus.is_some() => SeekResult::Current,
+            (SeekTarget::Modal | SeekTarget::Any, _) => enter(),
+            // Nothing outside an open overlay can be focused.
+            (SeekTarget::Key(_), _) => SeekResult::Blocked,
         }
     }
 

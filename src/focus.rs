@@ -55,6 +55,174 @@ impl FocusAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FocusKey(pub u32);
 
+/// Focus as the application sees it, kept in application state and bound to
+/// an [`App`](crate::app::App) with
+/// [`with_focus_binding`](crate::app::App::with_focus_binding).
+///
+/// Views read [`current`](Self::current) when what they show depends on
+/// focus. Anything that changes application state can ask for focus to move
+/// with [`request`](Self::request); the app moves it once the view is
+/// settled, if the requested element can be focused there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FocusState {
+    current: Option<FocusKey>,
+    request: Option<FocusKey>,
+}
+
+impl FocusState {
+    /// No focus, and nothing requested.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            current: None,
+            request: None,
+        }
+    }
+
+    /// No focus yet, with a request for `key`.
+    #[must_use]
+    pub const fn requesting(key: FocusKey) -> Self {
+        Self {
+            current: None,
+            request: Some(key),
+        }
+    }
+
+    /// The key of the focused element, as of the last time focus settled.
+    #[must_use]
+    pub const fn current(&self) -> Option<FocusKey> {
+        self.current
+    }
+
+    /// Asks for focus to move to `key`, replacing any earlier request.
+    pub fn request(&mut self, key: FocusKey) {
+        self.request = Some(key);
+    }
+
+    /// The request not yet acted on.
+    #[must_use]
+    pub const fn pending(&self) -> Option<FocusKey> {
+        self.request
+    }
+
+    pub(crate) fn take_request(&mut self) -> Option<FocusKey> {
+        self.request.take()
+    }
+
+    pub(crate) fn set_current(&mut self, key: Option<FocusKey>) {
+        self.current = key;
+    }
+}
+
+/// What [`seek`](crate::view::ViewLayout::seek) looks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeekTarget {
+    /// The element with this key.
+    Key(FocusKey),
+    /// The first element that can be focused.
+    Any,
+    /// The innermost open modal, such as a popover's overlay.
+    Modal,
+}
+
+/// A lookup made with [`seek`](crate::view::ViewLayout::seek).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Seek {
+    /// What is looked for.
+    pub target: SeekTarget,
+    /// The roles that may be focused.
+    pub roles: RoleSet,
+}
+
+impl Seek {
+    /// A lookup for `target` among elements with the given roles.
+    #[must_use]
+    pub const fn new(target: SeekTarget, roles: RoleSet) -> Self {
+        Self { target, roles }
+    }
+
+    /// The same lookup for a different target.
+    #[must_use]
+    pub const fn with_target(self, target: SeekTarget) -> Self {
+        Self {
+            target,
+            roles: self.roles,
+        }
+    }
+}
+
+/// Where a [`Seek`] leads in a view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SeekResult<T> {
+    /// The target can be focused along `tree`, with focus events in `group`.
+    Found {
+        /// The path to the target.
+        tree: T,
+        /// The group focus events must be sent in to reach it.
+        group: FocusGroup,
+    },
+    /// Focus is already inside the target.
+    Current,
+    /// An open modal keeps focus from the target.
+    Blocked,
+    /// The target is not here.
+    Absent,
+}
+
+impl<T> SeekResult<T> {
+    /// Found along `tree`, in the default group.
+    #[must_use]
+    pub fn found(tree: T) -> Self {
+        Self::Found {
+            tree,
+            group: FocusGroup::default(),
+        }
+    }
+
+    /// Wraps a found path in the caller's focus tree.
+    #[must_use]
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> SeekResult<U> {
+        match self {
+            Self::Found { tree, group } => SeekResult::Found {
+                tree: f(tree),
+                group,
+            },
+            Self::Current => SeekResult::Current,
+            Self::Blocked => SeekResult::Blocked,
+            Self::Absent => SeekResult::Absent,
+        }
+    }
+
+    /// Sets the group of a found path.
+    #[must_use]
+    pub fn with_group(self, group: FocusGroup) -> Self {
+        match self {
+            Self::Found { tree, .. } => Self::Found { tree, group },
+            other => other,
+        }
+    }
+
+    /// Combines the results of two siblings, `self` the earlier.
+    ///
+    /// A modal holds wherever it sits, so `Blocked` outranks everything;
+    /// focus already inside the target stays there; otherwise the earlier
+    /// path is taken.
+    #[must_use]
+    pub fn or(self, later: Self) -> Self {
+        match (self, later) {
+            (Self::Blocked, _) | (_, Self::Blocked) => Self::Blocked,
+            (Self::Current, _) | (_, Self::Current) => Self::Current,
+            (found @ Self::Found { .. }, _) | (Self::Absent, found) => found,
+        }
+    }
+
+    /// Whether the target was found.
+    #[must_use]
+    pub const fn is_found(&self) -> bool {
+        matches!(self, Self::Found { .. })
+    }
+}
+
 /// A trait for focus tree types that can be initialized to either the first or last element.
 ///
 /// This is roughly equivalent to `Default` but supports bidirectional navigation

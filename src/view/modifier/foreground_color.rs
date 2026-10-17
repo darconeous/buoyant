@@ -1,6 +1,7 @@
 use crate::{
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
+    focus::{Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{Interpolate, Point, ProposedDimensions},
     render::ShadeSubtree,
@@ -94,6 +95,16 @@ impl<Color: Interpolate + Clone, Captures: ?Sized, Inner: ViewLayout<Captures>> 
             state,
             focus,
         )
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        self.inner.seek(seek, &render_tree.subtree, state, focus)
     }
 
     fn handle_touch(

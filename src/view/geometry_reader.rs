@@ -5,6 +5,7 @@ use embedded_touch::Touch;
 use crate::{
     environment::LayoutEnvironment,
     event::{EventContext, EventResult, TouchResult},
+    focus::{Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{Dimensions, ProposedDimensions, Size, geometry::Rectangle},
     render::Container,
@@ -188,6 +189,20 @@ where
             *state = Some(inner_state);
             result
         }
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        // The view is built at layout, so a laid-out reader has its state.
+        let Some(inner_state) = state else {
+            return SeekResult::Absent;
+        };
+        (self.inner)(render_tree.frame.size).seek(seek, &render_tree.child, inner_state, focus)
     }
 
     fn handle_touch(

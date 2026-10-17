@@ -3,6 +3,7 @@ use embedded_touch::{Phase, Touch};
 use crate::{
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
+    focus::{Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimensions, geometry::Rectangle},
     render,
@@ -97,6 +98,16 @@ where
             state,
             focus,
         )
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        self.child.seek(seek, &render_tree.subtree, state, focus)
     }
 
     fn handle_touch(

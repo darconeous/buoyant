@@ -2,6 +2,7 @@ use embedded_touch::{Phase, Touch};
 
 use crate::{
     environment::LayoutEnvironment,
+    focus::{Seek, SeekResult},
     font::{CustomSize, Font, FontMetrics},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimension, ProposedDimensions, Size, geometry::Rectangle},
@@ -470,6 +471,16 @@ where
     ) -> EventResult {
         // FIXME: check for text role
         EventResult::Deferred
+    }
+
+    fn seek(
+        &self,
+        _seek: &Seek,
+        _render_tree: &Self::Renderables,
+        _state: &Self::State,
+        _focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        SeekResult::Absent
     }
 
     fn handle_touch(

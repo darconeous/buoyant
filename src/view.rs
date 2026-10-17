@@ -68,7 +68,7 @@ pub mod prelude {
     pub use crate::view::shape::*;
 }
 
-use crate::focus::DefaultFocus;
+use crate::focus::{DefaultFocus, Seek, SeekResult};
 use crate::transition::Transition;
 use crate::{
     environment::LayoutEnvironment,
@@ -209,6 +209,24 @@ pub trait ViewLayout<Captures: ?Sized>: ViewMarker {
         captures: &mut Captures,
         state: &mut Self::State,
     ) -> TouchResult<Self::FocusTree>;
+
+    /// Finds a path to the target of `seek` in the laid-out view, without
+    /// changing anything.
+    ///
+    /// `focus` is the current focus path where it passes through this view,
+    /// and `None` where it does not. A found path keeps the parts of it that
+    /// should outlive the move, such as where to return to when a popover is
+    /// dismissed.
+    ///
+    /// Containers search every child: a child reporting
+    /// [`Blocked`](SeekResult::Blocked) outranks one that found the target.
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree>;
 }
 
 impl<T> ViewMarker for &T
@@ -285,6 +303,16 @@ where
         state: &mut Self::State,
     ) -> TouchResult<Self::FocusTree> {
         (*self).handle_touch(touch, context, render_tree, captures, state)
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        (*self).seek(seek, render_tree, state, focus)
     }
 }
 

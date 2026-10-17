@@ -2,7 +2,7 @@ use embedded_touch::Touch;
 
 use crate::{
     event::{EventContext, EventResult, TouchResult},
-    focus::DefaultFocus,
+    focus::{DefaultFocus, Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{Dimensions, Point, ProposedDimensions},
     render::TransitionOption,
@@ -133,6 +133,21 @@ where
                 );
                 EventResult::Deferred
             }
+        }
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        match (self, render_tree, state) {
+            (Some(v), TransitionOption::Some { subtree, .. }, Some(s)) => v
+                .seek(seek, subtree, s, focus.and_then(Option::as_ref))
+                .map(Some),
+            _ => SeekResult::Absent,
         }
     }
 

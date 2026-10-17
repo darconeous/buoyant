@@ -7,7 +7,7 @@ use embedded_touch::Touch;
 use crate::{
     environment::LayoutEnvironment,
     event::{EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusKey},
+    focus::{DefaultFocus, FocusKey, Seek, SeekResult},
     layout::{HorizontalAlignment, LayoutDirection, ResolvedLayout, VerticalAlignment},
     primitives::{Dimension, Dimensions, Point, ProposedDimension, ProposedDimensions},
     transition::Opacity,
@@ -338,6 +338,18 @@ where
 {
     fn key_at(&self, index: usize) -> Option<FocusKey> {
         self.items.get(index).and_then(|item| self.keys.key(item))
+    }
+
+    /// The index of the item focus is on, if it is still here.
+    fn focused_index<T: DefaultFocus>(&self, focus: &Focus<T>) -> Option<usize> {
+        match focus.key {
+            Some(key) => self
+                .items
+                .iter()
+                .position(|item| self.keys.key(item) == Some(key)),
+            None if focus.index == usize::MAX => self.items.len().checked_sub(1),
+            None => Some(focus.index),
+        }
     }
 
     /// Finds the focused item again after the items changed.
@@ -698,6 +710,34 @@ where
             }
         }
         EventResult::Deferred
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        let len = self
+            .items
+            .len()
+            .min(state.items.len())
+            .min(render_tree.len());
+        let on_path = focus.and_then(|focus| Some((self.focused_index(focus)?, &focus.tree)));
+        let mut result = SeekResult::Absent;
+        for (index, item) in self.items[..len].iter().enumerate() {
+            let item_focus = on_path.and_then(|(i, tree)| (i == index).then_some(tree));
+            let found = (self.build_view)(item)
+                .seek(seek, &render_tree[index], &state.items[index], item_focus)
+                .map(|tree| Focus {
+                    index,
+                    key: self.keys.key(item),
+                    tree,
+                });
+            result = result.or(found);
+        }
+        result
     }
 
     fn handle_touch(

@@ -1,6 +1,7 @@
 use crate::{
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
+    focus::{Seek, SeekResult},
     layout::{HorizontalAlignment, ResolvedLayout, VerticalAlignment},
     primitives::{Point, ProposedDimensions, geometry::Shape as _},
     render::{HintBackground, ShadeSubtree, shape::AsShapePrimitive as _},
@@ -138,6 +139,17 @@ where
             state,
             focus,
         )
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        self.foreground
+            .seek(seek, &render_tree.1.subtree, state, focus)
     }
 
     fn handle_touch(

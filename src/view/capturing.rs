@@ -3,6 +3,7 @@ use embedded_touch::Touch;
 use crate::{
     environment::LayoutEnvironment,
     event::{EventContext, EventResult, TouchResult},
+    focus::{Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimensions},
     view::{ViewLayout, ViewMarker},
@@ -103,6 +104,16 @@ impl<
             state,
             focus,
         )
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        self.inner.seek(seek, render_tree, state, focus)
     }
 
     fn handle_touch(

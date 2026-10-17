@@ -7,6 +7,7 @@ use embedded_touch::{Phase, Touch};
 use crate::{
     animation::Animation,
     event::{Event, EventContext, EventResult, TouchResult},
+    focus::{FocusKey, Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{
         Dimensions, Point, ProposedDimension, ProposedDimensions, Size, geometry::Rectangle,
@@ -268,6 +269,8 @@ pub struct ScrollViewState<InnerState> {
     /// The view keeps the focused element in view. Scrolling by hand
     /// stops this until focus moves again.
     follows_focus: bool,
+    /// The key of the element focus was last found on.
+    focused_key: Option<FocusKey>,
 }
 
 /// Whether an offset leaves the content pinned to its end along each axis.
@@ -339,6 +342,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             inner_state: self.inner.build_state(captures),
             content_pinning,
             follows_focus: true,
+            focused_key: None,
         }
     }
 
@@ -518,15 +522,18 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                 focus,
             );
 
-            if let EventResult::Handled { shape, .. } = &mut result
+            if let EventResult::Handled { shape, key, .. } = &mut result
                 && let Some(frame) = shape.bounding_box()
             {
                 use crate::focus::FocusAction;
 
-                // Moving focus keeps the focused element in view. Acquiring
-                // focus in place, as a rebuild does, follows it too, unless the
-                // content was scrolled away from it by hand since.
-                let navigating = matches!(focus_event, FocusAction::Next | FocusAction::Previous);
+                // Moving focus keeps the focused element in view, whether by
+                // navigating or by focus landing on a different element.
+                // Acquiring focus in place, as a rebuild does, follows it too,
+                // unless the content was scrolled away from it by hand since.
+                let navigating = matches!(focus_event, FocusAction::Next | FocusAction::Previous)
+                    || *key != state.focused_key;
+                state.focused_key = *key;
                 if navigating {
                     state.follows_focus = true;
                 }
@@ -685,6 +692,17 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
         }
 
         result
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        self.inner
+            .seek(seek, render_tree.inner(), &state.inner_state, focus)
     }
 
     #[expect(clippy::too_many_lines)]

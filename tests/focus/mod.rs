@@ -1,3 +1,4 @@
+mod binding;
 mod modifier {
     mod background;
     mod bound_focus;

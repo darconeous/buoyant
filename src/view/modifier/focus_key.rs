@@ -1,7 +1,7 @@
 use crate::{
     environment::LayoutEnvironment,
     event::{Event, EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusKey},
+    focus::{DefaultFocus, FocusKey, Seek, SeekResult, SeekTarget},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimensions},
     view::{ViewLayout, ViewMarker},
@@ -88,6 +88,21 @@ where
         self.child
             .handle_event(event, context, render_tree, captures, state, focus)
             .with_key(self.key)
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        // Asking for this key asks for the element it names.
+        let seek = match seek.target {
+            SeekTarget::Key(key) if key == self.key => seek.with_target(SeekTarget::Any),
+            _ => *seek,
+        };
+        self.child.seek(&seek, render_tree, state, focus)
     }
 
     fn handle_touch(

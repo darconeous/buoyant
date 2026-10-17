@@ -39,6 +39,10 @@ impl<T> ScrollRenderable<T> {
         Rectangle::new(self.inner.offset, self.scroll_size)
     }
 
+    pub fn inner(&self) -> &T {
+        &self.inner.subtree.subtree.0.subtree
+    }
+
     pub fn inner_mut(&mut self) -> &mut T {
         &mut self.inner.subtree.subtree.0.subtree
     }

@@ -3,6 +3,7 @@ use embedded_touch::{Phase, Touch};
 use crate::{
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
+    focus::{Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{Dimensions, Point, ProposedDimensions, Size, geometry::Shape as _},
     render::shape::AsShapePrimitive as _,
@@ -83,6 +84,16 @@ impl<Captures: ?Sized> ViewLayout<Captures> for Rectangle {
         _focus: &mut Self::FocusTree,
     ) -> EventResult {
         EventResult::Deferred
+    }
+
+    fn seek(
+        &self,
+        _seek: &Seek,
+        _render_tree: &Self::Renderables,
+        _state: &Self::State,
+        _focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        SeekResult::Absent
     }
 
     fn handle_touch(

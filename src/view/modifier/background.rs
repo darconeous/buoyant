@@ -1,7 +1,7 @@
 use crate::{
     environment::LayoutEnvironment,
     event::{Event, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusAction, FocusDirection},
+    focus::{DefaultFocus, FocusAction, FocusDirection, Seek, SeekResult},
     layout::{Alignment, ResolvedLayout},
     primitives::{Point, ProposedDimension, ProposedDimensions},
     view::{ViewLayout, ViewMarker},
@@ -320,6 +320,31 @@ where
                 }
             },
         }
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        // The background comes first in focus order.
+        let background_focus = match focus {
+            Some(BackgroundFocus::Background(f)) => Some(f),
+            _ => None,
+        };
+        let foreground_focus = match focus {
+            Some(BackgroundFocus::Foreground(f)) => Some(f),
+            _ => None,
+        };
+        self.background
+            .seek(seek, &render_tree.0, &state.1, background_focus)
+            .map(BackgroundFocus::Background)
+            .or(self
+                .foreground
+                .seek(seek, &render_tree.1, &state.0, foreground_focus)
+                .map(BackgroundFocus::Foreground))
     }
 
     fn handle_touch(

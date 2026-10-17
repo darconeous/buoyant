@@ -2,6 +2,7 @@ use core::marker::PhantomData;
 
 use crate::{
     event::{Event, EventResult, TouchResult},
+    focus::{Seek, SeekResult},
     view::{ViewLayout, ViewMarker},
 };
 
@@ -149,6 +150,16 @@ impl<C: ?Sized, V: ViewLayout<C>, F: Fn(&Event, &mut C, &mut I) -> Mapping, I: '
             Mapping::Defer => EventResult::Deferred,
             Mapping::Handled => EventResult::handled_unfocused(),
         }
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        self.inner.seek(seek, render_tree, &state.1, focus)
     }
 
     fn handle_touch(

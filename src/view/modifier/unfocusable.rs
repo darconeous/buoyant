@@ -1,7 +1,7 @@
 use crate::{
     environment::LayoutEnvironment,
     event::{Event, EventContext, EventResult, TouchResult},
-    focus::DefaultFocus,
+    focus::{DefaultFocus, Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimensions},
     view::{ViewLayout, ViewMarker},
@@ -90,6 +90,16 @@ where
         };
 
         EventResult::Deferred
+    }
+
+    fn seek(
+        &self,
+        _seek: &Seek,
+        _render_tree: &Self::Renderables,
+        _state: &Self::State,
+        _focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        SeekResult::Absent
     }
 
     fn handle_touch(

@@ -6,7 +6,7 @@
 use crate::{
     environment::LayoutEnvironment,
     event::{Event, EventContext, EventResult, TouchResult},
-    focus::{BoundaryBehavior, DefaultFocus, FocusAction, FocusDirection},
+    focus::{BoundaryBehavior, DefaultFocus, FocusAction, FocusDirection, Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimensions},
     view::{ViewLayout, ViewMarker},
@@ -195,6 +195,16 @@ where
                 )
             }
         }
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        self.child.seek(seek, render_tree, state, focus)
     }
 
     fn handle_touch(

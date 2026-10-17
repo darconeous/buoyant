@@ -3,7 +3,7 @@ use embedded_touch::Touch;
 use crate::{
     environment::LayoutEnvironment,
     event::{EventContext, EventResult, TouchResult},
-    focus::DefaultFocus,
+    focus::{DefaultFocus, Seek, SeekResult},
     layout::{Alignment, HorizontalAlignment, ResolvedLayout, VerticalAlignment},
     primitives::{Point, ProposedDimension, ProposedDimensions},
     view::{ViewLayout, ViewMarker},
@@ -302,6 +302,33 @@ macro_rules! impl_view_for_zstack {
                 EventResult::Deferred
             }
 
+            fn seek(
+                &self,
+                seek: &Seek,
+                render_tree: &Self::Renderables,
+                state: &Self::State,
+                focus: Option<&Self::FocusTree>,
+            ) -> SeekResult<Self::FocusTree> {
+                use super::match_view::[<OneOf $ct>];
+
+                SeekResult::Absent
+                $(
+                    .or(self
+                        .items
+                        .$n
+                        .seek(
+                            seek,
+                            &render_tree.$n,
+                            &state.$n,
+                            match focus {
+                                Some([<OneOf $ct>]::[<V $n>](f)) => Some(f),
+                                _ => None,
+                            },
+                        )
+                        .map([<OneOf $ct>]::[<V $n>]))
+                )+
+            }
+
             fn handle_touch(
                 &self,
                 touch: &Touch,
@@ -424,6 +451,16 @@ where
         self.items
             .0
             .handle_event(event, context, render_tree, captures, state, focus)
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        self.items.0.seek(seek, render_tree, state, focus)
     }
 
     fn handle_touch(

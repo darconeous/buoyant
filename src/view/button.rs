@@ -7,7 +7,7 @@ use embedded_touch::{Phase, Touch};
 use crate::{
     environment::LayoutEnvironment,
     event::{Event, EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusAction, Role},
+    focus::{DefaultFocus, FocusAction, Role, Seek, SeekResult, SeekTarget},
     layout::ResolvedLayout,
     primitives::ProposedDimensions,
     render::IntrinsicShape,
@@ -242,6 +242,21 @@ where
                 }
             }
             _ => EventResult::Deferred,
+        }
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        _render_tree: &Self::Renderables,
+        _state: &Self::State,
+        _focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        match seek.target {
+            SeekTarget::Any if seek.roles.contains(Role::Button) => {
+                SeekResult::found(DefaultFocus::default_first())
+            }
+            _ => SeekResult::Absent,
         }
     }
 

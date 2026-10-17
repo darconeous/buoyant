@@ -6,7 +6,7 @@ use embedded_touch::Touch;
 use crate::{
     environment::LayoutEnvironment,
     event::{Event, EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusAction, FocusGroup},
+    focus::{DefaultFocus, FocusAction, FocusGroup, Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimensions},
     render::IntrinsicShape,
@@ -159,6 +159,18 @@ where
             state,
             &mut focus.inner,
         )
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        self.view
+            .seek(seek, render_tree, state, focus.map(|focus| &focus.inner))
+            .map(|inner| PaginateFocusTree { inner })
     }
 
     fn handle_touch(

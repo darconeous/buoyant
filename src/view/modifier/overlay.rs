@@ -1,7 +1,7 @@
 use crate::{
     environment::LayoutEnvironment,
     event::{Event, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusAction, FocusDirection},
+    focus::{DefaultFocus, FocusAction, FocusDirection, Seek, SeekResult},
     layout::{Alignment, ResolvedLayout},
     primitives::{Point, ProposedDimension, ProposedDimensions},
     view::{ViewLayout, ViewMarker},
@@ -320,6 +320,31 @@ where
                 }
             },
         }
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        // The overlay comes first in focus order.
+        let overlay_focus = match focus {
+            Some(OverlayFocus::Overlay(f)) => Some(f),
+            _ => None,
+        };
+        let foreground_focus = match focus {
+            Some(OverlayFocus::Foreground(f)) => Some(f),
+            _ => None,
+        };
+        self.overlay
+            .seek(seek, &render_tree.1, &state.1, overlay_focus)
+            .map(OverlayFocus::Overlay)
+            .or(self
+                .foreground
+                .seek(seek, &render_tree.0, &state.0, foreground_focus)
+                .map(OverlayFocus::Foreground))
     }
 
     fn handle_touch(

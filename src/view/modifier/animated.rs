@@ -2,6 +2,7 @@ use crate::{
     animation::Animation,
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
+    focus::{Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimensions},
     render::Animate,
@@ -101,6 +102,16 @@ where
             &mut state.1,
             focus,
         )
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        self.inner.seek(seek, &render_tree.subtree, &state.1, focus)
     }
 
     fn handle_touch(

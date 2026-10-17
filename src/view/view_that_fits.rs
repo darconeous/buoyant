@@ -3,7 +3,7 @@ use embedded_touch::Touch;
 use crate::{
     environment::LayoutEnvironment,
     event::{EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusAction, FocusDirection},
+    focus::{DefaultFocus, FocusAction, FocusDirection, Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimension, ProposedDimensions},
     render,
@@ -188,6 +188,16 @@ where
             .handle_event(event, context, render_tree, captures, state, focus)
     }
 
+    fn seek(
+        &self,
+        seek: &Seek,
+        render_tree: &Self::Renderables,
+        state: &Self::State,
+        focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        self.choices.0.seek(seek, render_tree, state, focus)
+    }
+
     fn handle_touch(
         &self,
         touch: &Touch,
@@ -341,6 +351,30 @@ macro_rules! impl_view_that_fits {
                             self.choices
                                 .$idx
                                 .handle_event(event, context, tree, captures, slot, inner_focus)
+                        }
+                    )+
+                }
+            }
+
+            fn seek(
+                &self,
+                seek: &Seek,
+                render_tree: &Self::Renderables,
+                state: &Self::State,
+                focus: Option<&Self::FocusTree>,
+            ) -> SeekResult<Self::FocusTree> {
+                // Only the mounted choice can be focused.
+                match render_tree {
+                    $(
+                        render::$one_of::$V(tree) => {
+                            let Some(slot) = state.$idx.as_ref() else {
+                                return SeekResult::Absent;
+                            };
+                            let focus = match focus {
+                                Some($one_of::$V(f)) => Some(f),
+                                _ => None,
+                            };
+                            self.choices.$idx.seek(seek, tree, slot, focus).map($one_of::$V)
                         }
                     )+
                 }
