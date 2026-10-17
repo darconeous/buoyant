@@ -1,5 +1,8 @@
 use crate::{
-    primitives::{Interpolate, Point, Size, geometry::RoundedRectangle},
+    primitives::{
+        Interpolate, Point, Size,
+        geometry::{CornerRadii, RoundedRectangle},
+    },
     render::{
         AnimatedJoin, AnimationDomain,
         shape::{AsShapePrimitive, Inset},
@@ -11,7 +14,7 @@ use crate::{
 pub struct RoundedRect {
     pub origin: Point,
     pub size: Size,
-    pub corner_radius: u16,
+    pub radii: CornerRadii<u16>,
 }
 
 impl RoundedRect {
@@ -20,7 +23,7 @@ impl RoundedRect {
         Self {
             origin,
             size,
-            corner_radius,
+            radii: CornerRadii::equal(corner_radius),
         }
     }
 }
@@ -29,7 +32,7 @@ impl Inset for RoundedRect {
     fn inset(mut self, amount: i32) -> Self {
         self.size.width = self.size.width.saturating_add_signed(-2 * amount);
         self.size.height = self.size.height.saturating_add_signed(-2 * amount);
-        self.corner_radius = self.corner_radius.saturating_add_signed(-amount as i16);
+        self.radii = self.radii.map(|r| r.saturating_add_signed(-amount as i16));
         self.origin.x += amount;
         self.origin.y += amount;
         self
@@ -39,10 +42,10 @@ impl Inset for RoundedRect {
 impl AsShapePrimitive for RoundedRect {
     type Primitive = RoundedRectangle;
     fn as_shape(&self) -> Self::Primitive {
-        RoundedRectangle::new(
+        RoundedRectangle::with_radii(
             self.origin,
             Size::new(self.size.width, self.size.height),
-            self.corner_radius.into(),
+            self.radii.map(u32::from),
         )
     }
 }
@@ -60,8 +63,13 @@ impl AnimatedJoin for RoundedRect {
             bottom_right.x.abs_diff(self.origin.x),
             bottom_right.y.abs_diff(self.origin.y),
         );
-        self.corner_radius =
-            u16::interpolate(source.corner_radius, self.corner_radius, domain.factor);
+        let (from, to) = (source.radii, self.radii);
+        self.radii = CornerRadii {
+            top_left: u16::interpolate(from.top_left, to.top_left, domain.factor),
+            top_right: u16::interpolate(from.top_right, to.top_right, domain.factor),
+            bottom_right: u16::interpolate(from.bottom_right, to.bottom_right, domain.factor),
+            bottom_left: u16::interpolate(from.bottom_left, to.bottom_left, domain.factor),
+        };
     }
 }
 
@@ -79,19 +87,19 @@ mod tests {
         let source = RoundedRect {
             origin: Point::new(0, 0),
             size: Size::new(20, 30),
-            corner_radius: 5,
+            radii: CornerRadii::equal(5),
         };
         let mut target = RoundedRect {
             origin: Point::new(10, 15),
             size: Size::new(40, 60),
-            corner_radius: 15,
+            radii: CornerRadii::equal(15),
         };
 
         target.join_from(&source, &animation_domain(0));
 
         assert_eq!(target.origin, source.origin);
         assert_eq!(target.size, source.size);
-        assert_eq!(target.corner_radius, source.corner_radius);
+        assert_eq!(target.radii, source.radii);
     }
 
     #[test]
@@ -99,12 +107,12 @@ mod tests {
         let source = RoundedRect {
             origin: Point::new(0, 0),
             size: Size::new(20, 30),
-            corner_radius: 5,
+            radii: CornerRadii::equal(5),
         };
         let original_target = RoundedRect {
             origin: Point::new(10, 15),
             size: Size::new(40, 60),
-            corner_radius: 15,
+            radii: CornerRadii::equal(15),
         };
         let mut target = original_target.clone();
 
@@ -112,7 +120,7 @@ mod tests {
 
         assert_eq!(target.origin, original_target.origin);
         assert_eq!(target.size, original_target.size);
-        assert_eq!(target.corner_radius, original_target.corner_radius);
+        assert_eq!(target.radii, original_target.radii);
     }
 
     #[test]
@@ -120,13 +128,13 @@ mod tests {
         let rect = RoundedRect {
             origin: Point::new(10, 20),
             size: Size::new(100, 200),
-            corner_radius: 30,
+            radii: CornerRadii::equal(30),
         };
         let inset_rect = rect.inset(10);
 
         assert_eq!(inset_rect.origin, Point::new(20, 30));
         assert_eq!(inset_rect.size, Size::new(80, 180));
-        assert_eq!(inset_rect.corner_radius, 20);
+        assert_eq!(inset_rect.radii, CornerRadii::equal(20));
     }
 
     #[test]
@@ -134,13 +142,13 @@ mod tests {
         let rect = RoundedRect {
             origin: Point::new(10, 20),
             size: Size::new(100, 200),
-            corner_radius: 30,
+            radii: CornerRadii::equal(30),
         };
         let inset_rect = rect.inset(-10);
 
         assert_eq!(inset_rect.origin, Point::new(0, 10));
         assert_eq!(inset_rect.size, Size::new(120, 220));
-        assert_eq!(inset_rect.corner_radius, 40);
+        assert_eq!(inset_rect.radii, CornerRadii::equal(40));
     }
 
     #[test]
@@ -148,14 +156,14 @@ mod tests {
         let rect = RoundedRect {
             origin: Point::new(10, 20),
             size: Size::new(100, 200),
-            corner_radius: 30,
+            radii: CornerRadii::equal(30),
         };
         let inset_rect = rect.inset(200);
 
         // Inset larger than size should not result in negative dimensions
         assert_eq!(inset_rect.origin, Point::new(210, 220));
         assert_eq!(inset_rect.size, Size::new(0, 0));
-        assert_eq!(inset_rect.corner_radius, 0);
+        assert_eq!(inset_rect.radii, CornerRadii::equal(0));
     }
 
     #[test]

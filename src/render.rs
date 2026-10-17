@@ -50,7 +50,7 @@ pub use shape::Rect;
 pub use shape::RoundedRect;
 pub use shape::StrokedShape;
 pub use text::Text;
-pub use text_field::TextField;
+pub use text_field::{CaretColor, CaretStyle, TextField};
 pub use transform::Transform;
 pub use transition_option::TransitionOption;
 
@@ -253,7 +253,7 @@ mod test {
                 width: 30,
                 height: 40,
             },
-            radius: 5,
+            radii: geometry::CornerRadii::equal(5),
         }
         .with_offset(Point { x: 5, y: 5 });
 

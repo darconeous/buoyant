@@ -5,7 +5,10 @@ use crate::{
     event::{EventResult, TouchResult},
     focus::{Seek, SeekResult},
     layout::ResolvedLayout,
-    primitives::{Dimensions, Point, ProposedDimensions, Size, geometry::Shape},
+    primitives::{
+        Dimensions, Point, ProposedDimensions, Size,
+        geometry::{CornerRadii, Shape},
+    },
     render::shape::AsShapePrimitive,
     transition::Opacity,
     view::{ViewLayout, ViewMarker},
@@ -18,14 +21,23 @@ use crate::{
 /// or [`ShapeExt::stroked_offset`][`super::ShapeExt::stroked_offset`].
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 pub struct RoundedRectangle {
-    corner_radius: u16,
+    radii: CornerRadii<u16>,
 }
 
 impl RoundedRectangle {
     /// A flexible rounded rectangle with the specified corner radius.
     #[must_use]
     pub const fn new(corner_radius: u16) -> Self {
-        Self { corner_radius }
+        Self {
+            radii: CornerRadii::equal(corner_radius),
+        }
+    }
+
+    /// A flexible rounded rectangle with each corner rounded by its own
+    /// radius.
+    #[must_use]
+    pub const fn with_radii(radii: CornerRadii<u16>) -> Self {
+        Self { radii }
     }
 }
 
@@ -70,7 +82,7 @@ impl<Captures: ?Sized> ViewLayout<Captures> for RoundedRectangle {
         crate::render::RoundedRect {
             origin,
             size: (*layout).into(),
-            corner_radius: self.corner_radius,
+            radii: self.radii,
         }
     }
 

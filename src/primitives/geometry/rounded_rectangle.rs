@@ -6,20 +6,60 @@ use crate::primitives::{
     transform::{CoordinateSpaceTransform, LinearTransform, ScaleFactor},
 };
 
+/// The radius of each corner of a rounded rectangle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct CornerRadii<T = u32> {
+    pub top_left: T,
+    pub top_right: T,
+    pub bottom_right: T,
+    pub bottom_left: T,
+}
+
+impl<T: Copy> CornerRadii<T> {
+    /// Every corner rounded by `radius`.
+    #[must_use]
+    pub const fn equal(radius: T) -> Self {
+        Self {
+            top_left: radius,
+            top_right: radius,
+            bottom_right: radius,
+            bottom_left: radius,
+        }
+    }
+
+    /// Each radius passed through `f`.
+    #[must_use]
+    pub fn map<U>(self, f: impl Fn(T) -> U) -> CornerRadii<U> {
+        CornerRadii {
+            top_left: f(self.top_left),
+            top_right: f(self.top_right),
+            bottom_right: f(self.bottom_right),
+            bottom_left: f(self.bottom_left),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoundedRectangle {
     pub origin: Point,
     pub size: Size,
-    pub radius: u32,
+    pub radii: CornerRadii,
 }
 
 impl RoundedRectangle {
+    /// A rectangle with every corner rounded by `radius`.
     #[must_use]
     pub const fn new(origin: Point, size: Size, radius: u32) -> Self {
+        Self::with_radii(origin, size, CornerRadii::equal(radius))
+    }
+
+    /// A rectangle with each corner rounded by its own radius.
+    #[must_use]
+    pub const fn with_radii(origin: Point, size: Size, radii: CornerRadii) -> Self {
         Self {
             origin,
             size,
-            radius,
+            radii,
         }
     }
 
@@ -41,7 +81,7 @@ impl CoordinateSpaceTransform for RoundedRectangle {
         Self {
             origin: self.origin.applying(transform),
             size: self.size.applying(transform),
-            radius: (self.radius * transform.scale).to_num(),
+            radii: self.radii.map(|r| (r * transform.scale).to_num()),
         }
     }
 
@@ -49,7 +89,9 @@ impl CoordinateSpaceTransform for RoundedRectangle {
         Self {
             origin: self.origin.applying_inverse(transform),
             size: self.size.applying_inverse(transform),
-            radius: (self.radius.to_fixed::<ScaleFactor>() / transform.scale).to_num(),
+            radii: self
+                .radii
+                .map(|r| (r.to_fixed::<ScaleFactor>() / transform.scale).to_num()),
         }
     }
 }
@@ -62,9 +104,15 @@ impl From<RoundedRectangle> for embedded_graphics::primitives::RoundedRectangle 
 
         use crate::primitives::geometry::Rectangle;
 
+        let radii = value.radii.map(Size::new_equal);
         Self::new(
             Rectangle::new(value.origin, value.size).into(),
-            CornerRadii::new(Size::new_equal(value.radius)),
+            CornerRadii {
+                top_left: radii.top_left,
+                top_right: radii.top_right,
+                bottom_right: radii.bottom_right,
+                bottom_left: radii.bottom_left,
+            },
         )
     }
 }
@@ -76,7 +124,7 @@ impl Shape for RoundedRectangle {
         Self: 'iter;
 
     fn path_elements(&self, _tolerance: u16) -> Self::PathElementsIter<'_> {
-        let r = self.radius as i32;
+        let r = self.radii.map(|r| r as i32);
         let width = self.size.width as i32;
         let height = self.size.height as i32;
         let x = self.origin.x;
@@ -85,25 +133,31 @@ impl Shape for RoundedRectangle {
         // FIXME: The quad points used here are suboptimal
         let elements = [
             // Starting point
-            PathEl::MoveTo(Point::new(x + width - r, y)),
+            PathEl::MoveTo(Point::new(x + width - r.top_right, y)),
             // Top edge and top-left corner
-            PathEl::LineTo(Point::new(x + r, y)),
-            PathEl::QuadTo(Point::new(x, y), Point::new(x, y + r)),
+            PathEl::LineTo(Point::new(x + r.top_left, y)),
+            PathEl::QuadTo(Point::new(x, y), Point::new(x, y + r.top_left)),
             // Left side
-            PathEl::LineTo(Point::new(x, y + height - r)),
+            PathEl::LineTo(Point::new(x, y + height - r.bottom_left)),
             // Bottom-left corner
-            PathEl::QuadTo(Point::new(x, y + height), Point::new(x + r, y + height)),
+            PathEl::QuadTo(
+                Point::new(x, y + height),
+                Point::new(x + r.bottom_left, y + height),
+            ),
             // Bottom side
-            PathEl::LineTo(Point::new(x + width - r, y + height)),
+            PathEl::LineTo(Point::new(x + width - r.bottom_right, y + height)),
             // Bottom-right corner
             PathEl::QuadTo(
                 Point::new(x + width, y + height),
-                Point::new(x + width, y + height - r),
+                Point::new(x + width, y + height - r.bottom_right),
             ),
             // Right side
-            PathEl::LineTo(Point::new(x + width, y + r)),
+            PathEl::LineTo(Point::new(x + width, y + r.top_right)),
             // Top-right corner
-            PathEl::QuadTo(Point::new(x + width, y), Point::new(x + width - r, y)),
+            PathEl::QuadTo(
+                Point::new(x + width, y),
+                Point::new(x + width - r.top_right, y),
+            ),
             // Close the path
             PathEl::ClosePath,
         ];
@@ -134,7 +188,7 @@ mod tests {
 
         assert_eq!(transformed.origin, Point::new(25, 50));
         assert_eq!(transformed.size, Size::new(80, 120));
-        assert_eq!(transformed.radius, 16);
+        assert_eq!(transformed.radii, CornerRadii::equal(16));
     }
 
     #[test]
@@ -146,7 +200,7 @@ mod tests {
 
         assert_eq!(inverse_transformed.origin, Point::new(22, 35));
         assert_eq!(inverse_transformed.size, Size::new(40, 60));
-        assert_eq!(inverse_transformed.radius, 8);
+        assert_eq!(inverse_transformed.radii, CornerRadii::equal(8));
     }
 
     #[test]
@@ -158,7 +212,28 @@ mod tests {
 
         assert_eq!(transformed.origin, original.origin);
         assert_eq!(transformed.size, original.size);
-        assert_eq!(transformed.radius, original.radius);
+        assert_eq!(transformed.radii, original.radii);
+    }
+
+    #[cfg(feature = "embedded-graphics")]
+    #[test]
+    fn each_corner_keeps_its_radius_in_embedded_graphics() {
+        let radii = CornerRadii {
+            top_left: 14,
+            top_right: 14,
+            bottom_right: 5,
+            bottom_left: 14,
+        };
+        let rounded_rect = RoundedRectangle::with_radii(Point::zero(), Size::new(60, 40), radii);
+        let converted: embedded_graphics::primitives::RoundedRectangle = rounded_rect.into();
+        assert_eq!(
+            converted.corners.bottom_right,
+            embedded_graphics::prelude::Size::new(5, 5)
+        );
+        assert_eq!(
+            converted.corners.top_left,
+            embedded_graphics::prelude::Size::new(14, 14)
+        );
     }
 
     #[test]

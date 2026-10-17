@@ -411,6 +411,7 @@ impl<'a, const N: usize, F: Font, L, S, ViewFn> TextField<'a, N, F, L, S, ViewFn
             max_lines: self.max_lines,
             caret_width: self.caret_width,
             active: status.active,
+            caret_style: (),
         }
     }
 }
@@ -651,16 +652,33 @@ impl<const N: usize, F: Font, L, S, ViewFn> TextField<'_, N, F, L, S, ViewFn> {
 /// It is as wide as offered, or as its text when not offered a width, and
 /// grows to the field's line limit, then scrolls within itself to keep the
 /// cursor in view.
-pub struct TextArea<'a, const N: usize, F: Font> {
+pub struct TextArea<'a, const N: usize, F: Font, K = ()> {
     buffer: EditBuffer<N>,
     font: &'a F,
     attributes: F::Attributes,
     max_lines: u16,
     caret_width: u32,
     active: bool,
+    caret_style: K,
 }
 
-impl<const N: usize, F: Font> core::fmt::Debug for TextArea<'_, N, F> {
+impl<'a, const N: usize, F: Font> TextArea<'a, N, F> {
+    /// Draws the caret in `color` rather than in the text's color.
+    #[must_use]
+    pub fn caret_color<C>(self, color: C) -> TextArea<'a, N, F, render::CaretColor<C>> {
+        TextArea {
+            buffer: self.buffer,
+            font: self.font,
+            attributes: self.attributes,
+            max_lines: self.max_lines,
+            caret_width: self.caret_width,
+            active: self.active,
+            caret_style: render::CaretColor(color),
+        }
+    }
+}
+
+impl<const N: usize, F: Font, K> core::fmt::Debug for TextArea<'_, N, F, K> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TextArea")
             .field("buffer", &self.buffer)
@@ -678,12 +696,12 @@ pub struct TextAreaLayout {
     caret: Option<Rectangle>,
 }
 
-impl<'a, const N: usize, F: Font> ViewMarker for TextArea<'a, N, F> {
-    type Renderables = render::TextField<'a, F, N>;
+impl<'a, const N: usize, F: Font, K: Clone> ViewMarker for TextArea<'a, N, F, K> {
+    type Renderables = render::TextField<'a, F, N, K>;
     type Transition = Opacity;
 }
 
-impl<C: ?Sized, const N: usize, F: Font> ViewLayout<C> for TextArea<'_, N, F> {
+impl<C: ?Sized, const N: usize, F: Font, K: Clone> ViewLayout<C> for TextArea<'_, N, F, K> {
     /// The first line shown when the text is longer than the area.
     type State = u16;
     type Sublayout = TextAreaLayout;
@@ -791,6 +809,7 @@ impl<C: ?Sized, const N: usize, F: Font> ViewLayout<C> for TextArea<'_, N, F> {
             lines: layout.lines.clone(),
             line_height: layout.line_height,
             caret: layout.caret.clone(),
+            caret_style: self.caret_style.clone(),
         }
     }
 

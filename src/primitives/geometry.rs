@@ -8,7 +8,7 @@ pub use circle::Circle;
 pub use line::Line;
 pub use no_shape::NoShape;
 pub use rectangle::Rectangle;
-pub use rounded_rectangle::RoundedRectangle;
+pub use rounded_rectangle::{CornerRadii, RoundedRectangle};
 
 use crate::primitives::transform::CoordinateSpaceTransform;
 
