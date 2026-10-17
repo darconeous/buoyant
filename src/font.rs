@@ -6,6 +6,9 @@ use crate::{
 mod character_buffer_font;
 pub use character_buffer_font::CharacterBufferFont;
 
+pub mod prerendered;
+pub use prerendered::PrerenderedFont;
+
 #[cfg(feature = "embedded-graphics")]
 mod embedded_mono_font;
 #[cfg(feature = "rusttype-fonts")]
