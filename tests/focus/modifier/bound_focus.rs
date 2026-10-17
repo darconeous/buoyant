@@ -5,10 +5,13 @@
 use buoyant::{
     app::{App, Harness as _},
     event::EventResult,
-    focus::{BoundaryBehavior, Role},
+    focus::{BoundaryBehavior, FocusAction, FocusKey, Role},
     primitives::Size,
     render::ContentShape,
-    view::prelude::*,
+    view::{
+        prelude::*,
+        rotary::{RotaryEvent, RotaryState},
+    },
 };
 
 #[derive(Clone)]
@@ -204,4 +207,32 @@ fn select_passes_through_when_not_handled() {
         App::new(State, Size::new(100, 200), no_focusable_elements).with_roles(Role::Button);
 
     assert!(matches!(harness.select(), EventResult::Deferred));
+}
+
+const DIAL: FocusKey = FocusKey(1);
+
+/// A dial that is focused but not captive defers `Teardown`.
+fn dial_then_button(_: &State) -> impl View<(), State> + use<> {
+    VStack::new((
+        Rotary::new(|_: &mut State, _: RotaryEvent| {}, |_: RotaryState| Circle)
+            .frame_sized(50, 50)
+            .focus_key(DIAL),
+        Button::new(|_: &mut State| {}, |_| Rectangle).frame_sized(50, 50),
+    ))
+    .bound_focus(BoundaryBehavior::Stop)
+}
+
+#[test]
+fn teardown_passes_through_without_refocusing() {
+    let mut harness =
+        App::new(State, Size::new(100, 200), dial_then_button).with_roles(Role::Button);
+    assert_eq!(harness.focus_forward().key(), Some(DIAL));
+
+    // Nothing claims focus while it is torn down: the boundary does not
+    // treat the deferral as running off the end and focus the dial again.
+    assert!(matches!(
+        harness.send(FocusAction::Teardown),
+        EventResult::Deferred
+    ));
+    assert_eq!(harness.focused_key(), None);
 }

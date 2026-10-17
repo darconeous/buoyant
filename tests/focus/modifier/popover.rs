@@ -1,10 +1,15 @@
 use buoyant::{
     app::{App, Harness as _},
     event::{Event, Key},
-    focus::{FocusAction, Role},
+    focus::{FocusAction, FocusKey, Role},
     primitives::{Point, Size},
     render::ContentShape,
-    view::{map_event::Mapping, popover::Dismissal, prelude::*},
+    view::{
+        map_event::Mapping,
+        popover::Dismissal,
+        prelude::*,
+        rotary::{RotaryEvent, RotaryState},
+    },
 };
 
 fn test_view(state: &State) -> impl View<(), State> + use<> {
@@ -377,4 +382,112 @@ fn popover_touch_routes_to_inner_when_hidden() {
         !harness.state().popover_a_tapped,
         "overlay should not fire when hidden"
     );
+}
+
+const BEFORE: FocusKey = FocusKey(1);
+const OPENER: FocusKey = FocusKey(2);
+const AFTER: FocusKey = FocusKey(3);
+
+static SLOTS: [u32; 4] = [10, 11, 12, 13];
+
+#[derive(Default)]
+struct ListState {
+    /// How many rows the open overlay shows.
+    open: Option<usize>,
+    exits: u32,
+}
+
+fn row() -> impl View<(), ListState> + use<> {
+    Button::new(|_: &mut ListState| {}, |_| Circle).frame_sized(20, 20)
+}
+
+/// A popover between two focusable siblings, its overlay a list of rows.
+fn list_popover(state: &ListState) -> impl View<(), ListState> + use<> {
+    VStack::new((
+        row().focus_key(BEFORE),
+        row()
+            .focus_key(OPENER)
+            .popover(state.open.as_ref(), |&rows| {
+                ForEach::<4>::new_vertical(&SLOTS[..rows], |_| row()).keyed(|&slot| FocusKey(slot))
+            })
+            .frame_sized(100, 100),
+        row().focus_key(AFTER),
+    ))
+}
+
+#[test]
+fn an_emptied_overlay_keeps_focus_from_the_views_behind_it() {
+    let state = ListState {
+        open: Some(2),
+        ..ListState::default()
+    };
+    let mut harness = App::new(state, Size::new(100, 200), list_popover).with_roles(Role::Button);
+    assert_eq!(harness.focus_forward().key(), Some(BEFORE));
+    assert_eq!(harness.next().key(), Some(FocusKey(10)));
+
+    // The overlay's rows go away while it stays open.
+    harness.state_mut().open = Some(0);
+    harness.force_rebuild();
+    assert_eq!(harness.focused_key(), None);
+
+    // Neither direction escapes to a sibling.
+    assert_eq!(harness.next().key(), None);
+    assert_eq!(harness.previous().key(), None);
+    assert_eq!(harness.focused_key(), None);
+}
+
+fn dial_popover(state: &ListState) -> impl View<(), ListState> + use<> {
+    Rotary::new(
+        |s: &mut ListState, event: RotaryEvent| {
+            if matches!(event, RotaryEvent::Exit) {
+                s.exits += 1;
+            }
+        },
+        |_: RotaryState| Rectangle,
+    )
+    .focus_key(OPENER)
+    .popover(state.open.as_ref(), |&rows| {
+        ForEach::<4>::new_vertical(&SLOTS[..rows], |_| row()).keyed(|&slot| FocusKey(slot))
+    })
+    .on_blur(|s: &mut ListState| {
+        s.open = None;
+        Dismissal::Dismiss
+    })
+}
+
+#[test]
+fn opening_over_a_captive_control_releases_it_once() {
+    let mut harness =
+        App::new(ListState::default(), Size::new(100, 100), dial_popover).with_roles(Role::Button);
+    assert_eq!(harness.focus_forward().key(), Some(OPENER));
+    assert!(harness.select().is_handled());
+    harness.finalize_view();
+
+    harness.state_mut().open = Some(2);
+    harness.force_rebuild();
+    assert_eq!(harness.focused_key(), Some(FocusKey(10)));
+    assert_eq!(harness.state().exits, 1);
+
+    // Dismissing returns focus to the opener, no longer captive.
+    assert_eq!(harness.blur().key(), Some(OPENER));
+    harness.finalize_view();
+    assert_eq!(harness.focused_key(), Some(OPENER));
+    assert_eq!(harness.state().exits, 1);
+    // A captive dial would take the turn.
+    assert!(!harness.next().is_handled());
+}
+
+#[test]
+fn a_dismissed_overlay_awaiting_rebuild_does_not_take_focus_back() {
+    let state = ListState {
+        open: Some(2),
+        ..ListState::default()
+    };
+    let mut harness = App::new(state, Size::new(100, 100), dial_popover).with_roles(Role::Button);
+    assert_eq!(harness.focus_forward().key(), Some(FocusKey(10)));
+    assert_eq!(harness.blur().key(), Some(OPENER));
+
+    // Before the rebuild that removes the overlay, focus stays with the opener.
+    assert_eq!(harness.focus_forward().key(), Some(OPENER));
+    assert_eq!(harness.state().exits, 0);
 }

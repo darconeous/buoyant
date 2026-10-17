@@ -72,6 +72,9 @@ pub struct FocusTree<T, U> {
 pub struct PopoverState<T, U> {
     pub inner_state: T,
     pub overlay_state: Option<U>,
+    /// The overlay was dismissed and focus returned to the inner view, but
+    /// the view has not been rebuilt without it yet.
+    pub dismissed: bool,
 }
 
 impl<T: DefaultFocus, U: DefaultFocus> DefaultFocus for FocusTree<T, U> {
@@ -128,8 +131,9 @@ where
     /// This should be used to update state backing the popover and decide whether
     /// the overlay should be dismissed by the blur.
     ///
-    /// Returning [`Dismissal::Dismiss`] drops the overlay's focus subtree and
-    /// requests a view rebuild; returning [`Dismissal::Retain`] keeps the
+    /// Returning [`Dismissal::Dismiss`] drops the overlay's focus subtree,
+    /// returns focus to where it was in the inner view, and requests a view
+    /// rebuild; returning [`Dismissal::Retain`] keeps the
     /// overlay mounted and focused.
     ///
     /// `Teardown` events do not invoke the callback: the overlay's focus tree
@@ -172,9 +176,6 @@ where
         Action: OnBlur<Captures>,
         Inner::Renderables: IntrinsicShape,
     {
-        // FIXME: We don't know when the overlay appears, so we don't get a chance to obtain initial focus
-        // Likely requires rethinking focus overall
-
         let subfocus = focus
             .overlay
             .get_or_insert_with(DefaultFocus::default_first);
@@ -183,8 +184,12 @@ where
             .get_or_insert_with(|| overlay_view.build_state(captures));
 
         let TransitionOption::Some { subtree, .. } = &mut render_tree.1.subtree else {
-            // TODO: Popover is visible, but we don't have a render tree for it yet
-            return EventResult::Deferred;
+            // Open but not rendered yet. Focus still belongs to the overlay,
+            // so nothing behind it is offered the event.
+            return match focus_event {
+                FocusAction::Teardown => EventResult::Deferred,
+                _ => EventResult::handled_unfocused(),
+            };
         };
 
         let result = overlay_view.handle_event(
@@ -208,11 +213,23 @@ where
             FocusAction::Blur => {
                 match self.on_blur.on_blur(captures) {
                     Dismissal::Dismiss => {
-                        // Drop the overlay focus subtree; focus returns to the
-                        // inner view.
+                        // Drop the overlay focus subtree and return focus to
+                        // where it was in the inner view, so the result
+                        // names the opener.
                         focus.overlay = None;
+                        state.dismissed = true;
                         context.request_view_rebuild();
-                        EventResult::handled_focused(render_tree.0.content_shape())
+                        self.inner.handle_event(
+                            &Event::Focus {
+                                action: FocusAction::Focus(FocusDirection::Forward),
+                                group,
+                            },
+                            context,
+                            &mut render_tree.0,
+                            captures,
+                            &mut state.inner_state,
+                            &mut focus.inner,
+                        )
                     }
                     Dismissal::Retain => EventResult::handled_unfocused(),
                 }
@@ -234,7 +251,7 @@ where
                 } else {
                     FocusDirection::Backward
                 };
-                overlay_view.handle_event(
+                let result = overlay_view.handle_event(
                     &Event::Focus {
                         action: FocusAction::Focus(acquire_direction),
                         group,
@@ -244,7 +261,14 @@ where
                     captures,
                     overlay_state,
                     subfocus,
-                )
+                );
+                // An overlay with nothing focusable still holds focus: the
+                // views behind it are not offered it.
+                if result.is_handled() {
+                    result
+                } else {
+                    EventResult::handled_unfocused()
+                }
             }
         }
     }
@@ -289,6 +313,7 @@ where
         Self::State {
             inner_state: self.inner.build_state(captures),
             overlay_state: self.overlay.as_ref().map(|o| o.build_state(captures)),
+            dismissed: false,
         }
     }
 
@@ -319,6 +344,9 @@ where
             captures,
             &mut state.inner_state,
         );
+        // A rebuilt view settles any dismissal: an overlay still present is
+        // open again and takes focus back.
+        state.dismissed = false;
         let overlay_tree = if let Some(overlay_view) = &self.overlay {
             let overlay_state = state
                 .overlay_state
@@ -371,27 +399,61 @@ where
         state: &mut Self::State,
         focus: &mut Self::FocusTree,
     ) -> EventResult {
-        // Handle focus events specially - they need to route through the focus tree
+        // Focus events go where the focus tree says focus is.
         if let Event::Focus {
             action: focus_event,
             group,
         } = event
         {
-            if let Some(overlay_view) = &self.overlay {
-                return self.handle_overlay_focus_event(
-                    overlay_view,
-                    *focus_event,
-                    *group,
-                    context,
-                    render_tree,
-                    captures,
-                    state,
-                    focus,
-                );
+            if let Some(overlay_view) = self.overlay.as_ref().filter(|_| !state.dismissed) {
+                if focus.overlay.is_none() && *focus_event != FocusAction::Teardown {
+                    // The overlay opened while focus was in the inner view.
+                    // Release the inner view, then move focus into the overlay.
+                    _ = self.inner.handle_event(
+                        &Event::Focus {
+                            action: FocusAction::Teardown,
+                            group: *group,
+                        },
+                        context,
+                        &mut render_tree.0,
+                        captures,
+                        &mut state.inner_state,
+                        &mut focus.inner,
+                    );
+                    let direction = match focus_event {
+                        FocusAction::Focus(direction) => *direction,
+                        _ => FocusDirection::Forward,
+                    };
+                    return self.handle_overlay_focus_event(
+                        overlay_view,
+                        FocusAction::Focus(direction),
+                        *group,
+                        context,
+                        render_tree,
+                        captures,
+                        state,
+                        focus,
+                    );
+                }
+                if focus.overlay.is_some() {
+                    return self.handle_overlay_focus_event(
+                        overlay_view,
+                        *focus_event,
+                        *group,
+                        context,
+                        render_tree,
+                        captures,
+                        state,
+                        focus,
+                    );
+                }
+            } else {
+                // No overlay is open: focus is in the inner view.
+                focus.overlay = None;
             }
-            // Overlay is not active - clear overlay focus and use inner focus
-            focus.overlay = None;
-            state.overlay_state = None;
+            if self.overlay.is_none() {
+                state.overlay_state = None;
+            }
 
             return self.inner.handle_event(
                 &Event::Focus {
@@ -406,7 +468,8 @@ where
             );
         }
 
-        match (&self.overlay, &mut render_tree.1.subtree) {
+        let overlay = self.overlay.as_ref().filter(|_| !state.dismissed);
+        match (overlay, &mut render_tree.1.subtree) {
             (Some(overlay_view), TransitionOption::Some { subtree, .. }) => {
                 let overlay_state = state
                     .overlay_state

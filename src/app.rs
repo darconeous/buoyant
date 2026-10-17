@@ -326,7 +326,8 @@ where
     /// Records what an event did to focus.
     ///
     /// Focus events say where focus now is, including that there is none
-    /// when acquiring it failed. Other events only report focus when they
+    /// when acquiring it failed or nothing claimed it through a teardown.
+    /// Other events only report focus when they
     /// return a focused shape: a key handled without one leaves focus as it
     /// was.
     fn update_focus(&mut self, event: &Event, result: &EventResult) {
@@ -345,7 +346,7 @@ where
                 if matches!(
                     event,
                     Event::Focus {
-                        action: FocusAction::Focus(_),
+                        action: FocusAction::Focus(_) | FocusAction::Teardown,
                         ..
                     }
                 ) =>

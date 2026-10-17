@@ -114,8 +114,12 @@ where
                 .handle_event(event, context, render_tree, captures, state, focus);
         };
 
-        // Blur and Select always pass through (defer to parent)
-        if matches!(focus_event, FocusAction::Blur | FocusAction::Select) {
+        // Blur, Select and Teardown always pass through (defer to parent):
+        // they never move focus, so there is no boundary to wrap or stop at.
+        if matches!(
+            focus_event,
+            FocusAction::Blur | FocusAction::Select | FocusAction::Teardown
+        ) {
             return self
                 .child
                 .handle_event(event, context, render_tree, captures, state, focus);

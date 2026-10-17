@@ -135,22 +135,22 @@ where
         if let Event::Focus { action, group } = event
             && *group == self.group
         {
-            // Events directed at the pagination group should trigger the action
-            match action {
-                FocusAction::Next => {
-                    (self.action)(captures, PageEvent::Next);
-                    context.request_view_rebuild();
-                }
-                FocusAction::Previous => {
-                    (self.action)(captures, PageEvent::Previous);
-                    context.request_view_rebuild();
-                }
-                _ => {}
+            // Moving through the pagination group turns the page. Every other
+            // focus action belongs to the page's contents: acquiring focus,
+            // selecting, and tearing it down all reach the focused element.
+            let page = match action {
+                FocusAction::Next => Some(PageEvent::Next),
+                FocusAction::Previous => Some(PageEvent::Previous),
+                _ => None,
+            };
+            if let Some(page) = page {
+                (self.action)(captures, page);
+                context.request_view_rebuild();
+                return EventResult::handled_focused(render_tree.content_shape());
             }
-            return EventResult::handled_focused(render_tree.content_shape());
         }
 
-        // For non-focus events, delegate to inner view.
+        // Everything else is delegated to the inner view.
         self.view.handle_event(
             event,
             context,
