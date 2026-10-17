@@ -49,7 +49,7 @@ pub use scroll_view::ScrollView;
 pub use spacer::Spacer;
 pub(crate) use text::{CharacterWrap, WordWrap};
 pub use text::{HorizontalTextAlignment, Text, WrapStrategy};
-pub use text_field::{EditBuffer, TextField};
+pub use text_field::{EditBuffer, TextArea, TextField};
 pub use view_that_fits::{FitAxis, ViewThatFits};
 pub use vstack::VStack;
 pub use zstack::ZStack;

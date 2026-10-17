@@ -244,3 +244,33 @@ fn a_field_takes_focus_only_with_the_text_entry_role() {
     assert_eq!(app.focused_key(), Some(FocusKey(0)));
     assert!(!app.next().is_handled());
 }
+
+#[derive(Default)]
+struct Looks {
+    draft: EditBuffer<16>,
+}
+
+/// A field inset further while it is edited, so its status shows in its size.
+fn labeled(state: &Looks) -> impl View<(), Looks> + use<> {
+    TextField::new(&state.draft, &FONT, |s: &mut Looks| Some(&mut s.draft)).with_label(
+        |status, area| {
+            let inset = if status.is_active() { 2 } else { 1 };
+            area.padding(Edges::All, inset)
+        },
+    )
+}
+
+#[test]
+fn the_label_follows_the_field_status() {
+    let mut app =
+        App::new(Looks::default(), Size::new(10, 10), labeled).with_roles(Role::TextEntry);
+    let shape = |app: &App<_, _, _>| match app.focus_shape() {
+        buoyant::render::ContentShape::Rectangle(rect) => rect.size,
+        other => panic!("unexpected focus shape {other:?}"),
+    };
+    assert!(app.focus_forward().is_handled());
+    assert_eq!(shape(&app), Size::new(8, 1));
+    assert!(app.select().is_handled());
+    app.finalize_view();
+    assert_eq!(shape(&app), Size::new(6, 1));
+}

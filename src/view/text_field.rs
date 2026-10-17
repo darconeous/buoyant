@@ -8,10 +8,10 @@ use crate::{
     environment::LayoutEnvironment,
     event::{Event, EventContext, EventResult, Key, TouchResult},
     focus::{FocusAction, Role, Seek, SeekResult, SeekTarget},
-    font::{Font, FontMetrics},
+    font::{CustomSize, Font, FontMetrics},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimension, ProposedDimensions, Size, geometry::Rectangle},
-    render::{self, IntrinsicShape, text_field::MAX_VISIBLE_LINES},
+    render::{self, ContentShape, IntrinsicShape, text_field::MAX_VISIBLE_LINES},
     transition::Opacity,
     view::{ViewLayout, ViewMarker},
 };
@@ -265,6 +265,28 @@ impl<C: ?Sized> OnSubmit<C> for NoSubmit {
     }
 }
 
+/// Whether a [`TextField`] is focused and whether it is being edited, for
+/// the field's label to show.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TextFieldStatus {
+    focused: bool,
+    active: bool,
+}
+
+impl TextFieldStatus {
+    /// Whether the field is focused.
+    #[must_use]
+    pub const fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// Whether the field is being edited, showing a cursor.
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        self.active
+    }
+}
+
 /// Edits an [`EditBuffer`] kept in application data.
 ///
 /// The field takes focus with the [`TextEntry`](Role::TextEntry) role. When
@@ -277,10 +299,10 @@ impl<C: ?Sized> OnSubmit<C> for NoSubmit {
 /// field is shown and is forgotten when it is not; the text is the
 /// application's.
 ///
-/// The field is as wide as offered, or as its text when not offered a
-/// width, and grows to [`with_max_lines`](Self::with_max_lines) lines, then
-/// scrolls within itself to keep the cursor in view.
-pub struct TextField<'a, const N: usize, F: Font, L, S = NoSubmit> {
+/// Like a [`Button`](crate::view::Button)'s, the field's look comes from a
+/// label function, given the field's [`TextFieldStatus`] and its
+/// [`TextArea`] to place, as with [`with_label`](Self::with_label).
+pub struct TextField<'a, const N: usize, F: Font, L, S, ViewFn> {
     buffer: EditBuffer<N>,
     lens: L,
     on_submit: S,
@@ -288,9 +310,14 @@ pub struct TextField<'a, const N: usize, F: Font, L, S = NoSubmit> {
     attributes: F::Attributes,
     max_lines: u16,
     caret_width: u32,
+    label: ViewFn,
 }
 
-impl<const N: usize, F: Font, L, S> core::fmt::Debug for TextField<'_, N, F, L, S> {
+/// The label of a field that shows only its text.
+pub type PlainLabel<'a, const N: usize, F> =
+    fn(TextFieldStatus, TextArea<'a, N, F>) -> TextArea<'a, N, F>;
+
+impl<const N: usize, F: Font, L, S, ViewFn> core::fmt::Debug for TextField<'_, N, F, L, S, ViewFn> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TextField")
             .field("buffer", &self.buffer)
@@ -299,7 +326,7 @@ impl<const N: usize, F: Font, L, S> core::fmt::Debug for TextField<'_, N, F, L, 
     }
 }
 
-impl<'a, const N: usize, F: Font, L> TextField<'a, N, F, L, NoSubmit> {
+impl<'a, const N: usize, F: Font, L> TextField<'a, N, F, L, NoSubmit, PlainLabel<'a, N, F>> {
     /// A field showing `buffer`, which edits the buffer `lens` reaches.
     ///
     /// The lens is called each time the field edits, and should reach the
@@ -319,14 +346,18 @@ impl<'a, const N: usize, F: Font, L> TextField<'a, N, F, L, NoSubmit> {
             attributes: F::Attributes::default(),
             max_lines: 1,
             caret_width: 2,
+            label: |_, area| area,
         }
     }
 }
 
-impl<'a, const N: usize, F: Font, L, S> TextField<'a, N, F, L, S> {
+impl<'a, const N: usize, F: Font, L, S, ViewFn> TextField<'a, N, F, L, S, ViewFn> {
     /// Runs `on_submit` when Enter is pressed while the field is active.
     #[must_use]
-    pub fn on_submit<C: ?Sized, T: Fn(&mut C)>(self, on_submit: T) -> TextField<'a, N, F, L, T> {
+    pub fn on_submit<C: ?Sized, T: Fn(&mut C)>(
+        self,
+        on_submit: T,
+    ) -> TextField<'a, N, F, L, T, ViewFn> {
         TextField {
             buffer: self.buffer,
             lens: self.lens,
@@ -335,6 +366,25 @@ impl<'a, const N: usize, F: Font, L, S> TextField<'a, N, F, L, S> {
             attributes: self.attributes,
             max_lines: self.max_lines,
             caret_width: self.caret_width,
+            label: self.label,
+        }
+    }
+
+    /// Draws the field with `label`, given its status and its text area.
+    #[must_use]
+    pub fn with_label<Inner, T>(self, label: T) -> TextField<'a, N, F, L, S, T>
+    where
+        T: Fn(TextFieldStatus, TextArea<'a, N, F>) -> Inner,
+    {
+        TextField {
+            buffer: self.buffer,
+            lens: self.lens,
+            on_submit: self.on_submit,
+            font: self.font,
+            attributes: self.attributes,
+            max_lines: self.max_lines,
+            caret_width: self.caret_width,
+            label,
         }
     }
 
@@ -351,38 +401,292 @@ impl<'a, const N: usize, F: Font, L, S> TextField<'a, N, F, L, S> {
         self.caret_width = width;
         self
     }
+
+    /// The text area for a field with `status`.
+    fn area(&self, status: TextFieldStatus) -> TextArea<'a, N, F> {
+        TextArea {
+            buffer: self.buffer.clone(),
+            font: self.font,
+            attributes: self.attributes.clone(),
+            max_lines: self.max_lines,
+            caret_width: self.caret_width,
+            active: status.active,
+        }
+    }
 }
 
-/// Whether a field is focused and active.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct TextFieldState {
-    focused: bool,
+impl<const N: usize, F: Font<Attributes: CustomSize>, L, S, ViewFn>
+    TextField<'_, N, F, L, S, ViewFn>
+{
+    /// Sets the font size.
+    #[must_use]
+    pub fn with_font_size(self, size: u32) -> Self {
+        Self {
+            attributes: self.attributes.with_size(size),
+            ..self
+        }
+    }
+}
+
+impl<'a, const N: usize, F: Font, L, S, ViewFn, Inner> ViewMarker
+    for TextField<'a, N, F, L, S, ViewFn>
+where
+    ViewFn: Fn(TextFieldStatus, TextArea<'a, N, F>) -> Inner,
+    Inner: ViewMarker<Renderables: IntrinsicShape>,
+{
+    type Renderables = Inner::Renderables;
+    type Transition = Opacity;
+}
+
+impl<'a, C: ?Sized, const N: usize, F: Font, L, S, ViewFn, Inner> ViewLayout<C>
+    for TextField<'a, N, F, L, S, ViewFn>
+where
+    L: Fn(&mut C) -> Option<&mut EditBuffer<N>>,
+    S: OnSubmit<C>,
+    ViewFn: Fn(TextFieldStatus, TextArea<'a, N, F>) -> Inner,
+    Inner: ViewLayout<C, Renderables: IntrinsicShape>,
+{
+    type State = (TextFieldStatus, Inner::State);
+    type Sublayout = ResolvedLayout<Inner::Sublayout>;
+    type FocusTree = ();
+
+    fn transition(&self) -> Self::Transition {
+        Opacity
+    }
+
+    fn build_state(&self, captures: &mut C) -> Self::State {
+        let status = TextFieldStatus::default();
+        let inner = (self.label)(status, self.area(status)).build_state(captures);
+        (status, inner)
+    }
+
+    fn layout(
+        &self,
+        offer: &ProposedDimensions,
+        env: &impl LayoutEnvironment,
+        captures: &mut C,
+        state: &mut Self::State,
+    ) -> ResolvedLayout<Self::Sublayout> {
+        let inner =
+            (self.label)(state.0, self.area(state.0)).layout(offer, env, captures, &mut state.1);
+        ResolvedLayout {
+            resolved_size: inner.resolved_size,
+            sublayouts: inner,
+        }
+    }
+
+    fn render_tree(
+        &self,
+        layout: &Self::Sublayout,
+        origin: Point,
+        env: &impl LayoutEnvironment,
+        captures: &mut C,
+        state: &mut Self::State,
+    ) -> Self::Renderables {
+        (self.label)(state.0, self.area(state.0)).render_tree(
+            &layout.sublayouts,
+            origin,
+            env,
+            captures,
+            &mut state.1,
+        )
+    }
+
+    fn handle_event(
+        &self,
+        event: &Event,
+        context: &EventContext,
+        render_tree: &mut Self::Renderables,
+        captures: &mut C,
+        state: &mut Self::State,
+        _focus: &mut Self::FocusTree,
+    ) -> EventResult {
+        let status = &mut state.0;
+        match event {
+            Event::Focus { action, .. } => {
+                if !context.roles.contains(Role::TextEntry) {
+                    return EventResult::Deferred;
+                }
+                self.handle_focus(
+                    *action,
+                    context,
+                    captures,
+                    status,
+                    render_tree.content_shape(),
+                )
+            }
+            Event::KeyDown(key) if status.focused => {
+                self.handle_key(*key, context, captures, status)
+            }
+            _ => EventResult::Deferred,
+        }
+    }
+
+    fn seek(
+        &self,
+        seek: &Seek,
+        _render_tree: &Self::Renderables,
+        _state: &Self::State,
+        _focus: Option<&Self::FocusTree>,
+    ) -> SeekResult<Self::FocusTree> {
+        match seek.target {
+            SeekTarget::Any if seek.roles.contains(Role::TextEntry) => SeekResult::found(()),
+            _ => SeekResult::Absent,
+        }
+    }
+
+    fn handle_touch(
+        &self,
+        _touch: &Touch,
+        _context: &EventContext,
+        _render_tree: &mut Self::Renderables,
+        _captures: &mut C,
+        _state: &mut Self::State,
+    ) -> TouchResult<Self::FocusTree> {
+        TouchResult::Deferred
+    }
+}
+
+impl<const N: usize, F: Font, L, S, ViewFn> TextField<'_, N, F, L, S, ViewFn> {
+    fn handle_focus<C: ?Sized>(
+        &self,
+        action: FocusAction,
+        context: &EventContext,
+        captures: &mut C,
+        status: &mut TextFieldStatus,
+        shape: ContentShape,
+    ) -> EventResult
+    where
+        L: Fn(&mut C) -> Option<&mut EditBuffer<N>>,
+    {
+        let before = *status;
+        let result = match action {
+            FocusAction::Focus(_) => {
+                status.focused = true;
+                EventResult::handled_focused(shape)
+            }
+            FocusAction::Next | FocusAction::Previous if status.active => {
+                if let Some(buffer) = (self.lens)(captures) {
+                    if action == FocusAction::Next {
+                        buffer.move_forward();
+                    } else {
+                        buffer.move_back();
+                    }
+                    context.request_view_rebuild();
+                }
+                EventResult::handled_focused(shape)
+            }
+            FocusAction::Select => {
+                status.active = !status.active;
+                EventResult::handled_focused(shape)
+            }
+            FocusAction::Blur if status.active => {
+                status.active = false;
+                EventResult::handled_focused(shape)
+            }
+            FocusAction::Teardown => {
+                *status = TextFieldStatus::default();
+                EventResult::handled_unfocused()
+            }
+            FocusAction::Next | FocusAction::Previous | FocusAction::Blur => {
+                status.focused = false;
+                EventResult::Deferred
+            }
+        };
+        if *status != before {
+            context.request_view_rebuild();
+        }
+        result
+    }
+
+    fn handle_key<C: ?Sized>(
+        &self,
+        key: Key,
+        context: &EventContext,
+        captures: &mut C,
+        status: &mut TextFieldStatus,
+    ) -> EventResult
+    where
+        L: Fn(&mut C) -> Option<&mut EditBuffer<N>>,
+        S: OnSubmit<C>,
+    {
+        if !status.active {
+            // Typing starts editing; anything else is for the views around.
+            match key {
+                Key::Character(_) | Key::Enter => status.active = true,
+                _ => return EventResult::Deferred,
+            }
+            context.request_view_rebuild();
+            if key == Key::Enter {
+                return EventResult::handled_unfocused();
+            }
+        }
+        if key == Key::Enter {
+            return if self.on_submit.on_submit(captures) {
+                context.request_view_rebuild();
+                EventResult::handled_unfocused()
+            } else {
+                EventResult::Deferred
+            };
+        }
+        let Some(buffer) = (self.lens)(captures) else {
+            return EventResult::Deferred;
+        };
+        match key {
+            Key::Character(c) => _ = buffer.insert(c),
+            Key::Backspace => _ = buffer.erase_back(),
+            Key::LeftArrow => _ = buffer.move_back(),
+            Key::RightArrow => _ = buffer.move_forward(),
+            Key::PreviousWord => _ = buffer.move_back_word(),
+            Key::NextWord => _ = buffer.move_forward_word(),
+            _ => return EventResult::Deferred,
+        }
+        context.request_view_rebuild();
+        EventResult::handled_unfocused()
+    }
+}
+
+/// A field's text, broken into lines, with the cursor while it is edited.
+///
+/// It is as wide as offered, or as its text when not offered a width, and
+/// grows to the field's line limit, then scrolls within itself to keep the
+/// cursor in view.
+pub struct TextArea<'a, const N: usize, F: Font> {
+    buffer: EditBuffer<N>,
+    font: &'a F,
+    attributes: F::Attributes,
+    max_lines: u16,
+    caret_width: u32,
     active: bool,
-    /// The first line shown when the text is longer than the field.
-    first_line: u16,
 }
 
-/// The lines a field shows and where its cursor is.
+impl<const N: usize, F: Font> core::fmt::Debug for TextArea<'_, N, F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TextArea")
+            .field("buffer", &self.buffer)
+            .field("active", &self.active)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The lines a text area shows and where its cursor is.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextFieldLayout {
+pub struct TextAreaLayout {
     size: Size,
     lines: heapless::Vec<Range<u16>, MAX_VISIBLE_LINES>,
     line_height: u32,
     caret: Option<Rectangle>,
 }
 
-impl<'a, const N: usize, F: Font, L, S> ViewMarker for TextField<'a, N, F, L, S> {
+impl<'a, const N: usize, F: Font> ViewMarker for TextArea<'a, N, F> {
     type Renderables = render::TextField<'a, F, N>;
     type Transition = Opacity;
 }
 
-impl<C: ?Sized, const N: usize, F: Font, L, S> ViewLayout<C> for TextField<'_, N, F, L, S>
-where
-    L: Fn(&mut C) -> Option<&mut EditBuffer<N>>,
-    S: OnSubmit<C>,
-{
-    type State = TextFieldState;
-    type Sublayout = TextFieldLayout;
+impl<C: ?Sized, const N: usize, F: Font> ViewLayout<C> for TextArea<'_, N, F> {
+    /// The first line shown when the text is longer than the area.
+    type State = u16;
+    type Sublayout = TextAreaLayout;
     type FocusTree = ();
 
     fn transition(&self) -> Self::Transition {
@@ -390,7 +694,7 @@ where
     }
 
     fn build_state(&self, _captures: &mut C) -> Self::State {
-        TextFieldState::default()
+        0
     }
 
     fn layout(
@@ -398,7 +702,7 @@ where
         offer: &ProposedDimensions,
         _env: &impl LayoutEnvironment,
         _captures: &mut C,
-        state: &mut Self::State,
+        first_line: &mut Self::State,
     ) -> ResolvedLayout<Self::Sublayout> {
         let metrics = self.font.metrics(&self.attributes);
         let line_height = metrics.vertical_metrics().line_height();
@@ -436,20 +740,20 @@ where
 
         // Keep the cursor's line in view.
         let visible = line_count.clamp(1, usize::from(self.max_lines));
-        let mut first = usize::from(state.first_line).min(line_count - visible);
+        let mut first = usize::from(*first_line).min(line_count - visible);
         if caret_line < first {
             first = caret_line;
         } else if caret_line >= first + visible {
             first = caret_line + 1 - visible;
         }
-        state.first_line = first as u16;
+        *first_line = first as u16;
 
         let lines = EditLines::new(text, width, &metrics)
             .skip(first)
             .take(visible)
             .map(|line| line.start as u16..line.end as u16)
             .collect();
-        let caret = state.active.then(|| {
+        let caret = self.active.then(|| {
             Rectangle::new(
                 Point::new(
                     caret_x.min(width.saturating_sub(self.caret_width)) as i32,
@@ -460,7 +764,7 @@ where
         });
         let size = Size::new(width, visible as u32 * line_height);
         ResolvedLayout {
-            sublayouts: TextFieldLayout {
+            sublayouts: TextAreaLayout {
                 size,
                 lines,
                 line_height,
@@ -492,37 +796,24 @@ where
 
     fn handle_event(
         &self,
-        event: &Event,
-        context: &EventContext,
-        render_tree: &mut Self::Renderables,
-        captures: &mut C,
-        state: &mut Self::State,
+        _event: &Event,
+        _context: &EventContext,
+        _render_tree: &mut Self::Renderables,
+        _captures: &mut C,
+        _state: &mut Self::State,
         _focus: &mut Self::FocusTree,
     ) -> EventResult {
-        let shape = render_tree.content_shape();
-        match event {
-            Event::Focus { action, .. } => {
-                if !context.roles.contains(Role::TextEntry) {
-                    return EventResult::Deferred;
-                }
-                self.handle_focus(*action, context, captures, state, shape)
-            }
-            Event::KeyDown(key) if state.focused => self.handle_key(*key, context, captures, state),
-            _ => EventResult::Deferred,
-        }
+        EventResult::Deferred
     }
 
     fn seek(
         &self,
-        seek: &Seek,
+        _seek: &Seek,
         _render_tree: &Self::Renderables,
         _state: &Self::State,
         _focus: Option<&Self::FocusTree>,
     ) -> SeekResult<Self::FocusTree> {
-        match seek.target {
-            SeekTarget::Any if seek.roles.contains(Role::TextEntry) => SeekResult::found(()),
-            _ => SeekResult::Absent,
-        }
+        SeekResult::Absent
     }
 
     fn handle_touch(
@@ -534,106 +825,6 @@ where
         _state: &mut Self::State,
     ) -> TouchResult<Self::FocusTree> {
         TouchResult::Deferred
-    }
-}
-
-impl<const N: usize, F: Font, L, S> TextField<'_, N, F, L, S> {
-    fn handle_focus<C: ?Sized>(
-        &self,
-        action: FocusAction,
-        context: &EventContext,
-        captures: &mut C,
-        state: &mut TextFieldState,
-        shape: crate::render::ContentShape,
-    ) -> EventResult
-    where
-        L: Fn(&mut C) -> Option<&mut EditBuffer<N>>,
-    {
-        let before = *state;
-        let result = match action {
-            FocusAction::Focus(_) => {
-                state.focused = true;
-                EventResult::handled_focused(shape)
-            }
-            FocusAction::Next | FocusAction::Previous if state.active => {
-                if let Some(buffer) = (self.lens)(captures) {
-                    if action == FocusAction::Next {
-                        buffer.move_forward();
-                    } else {
-                        buffer.move_back();
-                    }
-                    context.request_view_rebuild();
-                }
-                EventResult::handled_focused(shape)
-            }
-            FocusAction::Select => {
-                state.active = !state.active;
-                EventResult::handled_focused(shape)
-            }
-            FocusAction::Blur if state.active => {
-                state.active = false;
-                EventResult::handled_focused(shape)
-            }
-            FocusAction::Teardown => {
-                state.focused = false;
-                state.active = false;
-                EventResult::handled_unfocused()
-            }
-            FocusAction::Next | FocusAction::Previous | FocusAction::Blur => {
-                state.focused = false;
-                EventResult::Deferred
-            }
-        };
-        if *state != before {
-            context.request_view_rebuild();
-        }
-        result
-    }
-
-    fn handle_key<C: ?Sized>(
-        &self,
-        key: Key,
-        context: &EventContext,
-        captures: &mut C,
-        state: &mut TextFieldState,
-    ) -> EventResult
-    where
-        L: Fn(&mut C) -> Option<&mut EditBuffer<N>>,
-        S: OnSubmit<C>,
-    {
-        if !state.active {
-            // Typing starts editing; anything else is for the views around.
-            match key {
-                Key::Character(_) | Key::Enter => state.active = true,
-                _ => return EventResult::Deferred,
-            }
-            context.request_view_rebuild();
-            if key == Key::Enter {
-                return EventResult::handled_unfocused();
-            }
-        }
-        if key == Key::Enter {
-            return if self.on_submit.on_submit(captures) {
-                context.request_view_rebuild();
-                EventResult::handled_unfocused()
-            } else {
-                EventResult::Deferred
-            };
-        }
-        let Some(buffer) = (self.lens)(captures) else {
-            return EventResult::Deferred;
-        };
-        match key {
-            Key::Character(c) => _ = buffer.insert(c),
-            Key::Backspace => _ = buffer.erase_back(),
-            Key::LeftArrow => _ = buffer.move_back(),
-            Key::RightArrow => _ = buffer.move_forward(),
-            Key::PreviousWord => _ = buffer.move_back_word(),
-            Key::NextWord => _ = buffer.move_forward_word(),
-            _ => return EventResult::Deferred,
-        }
-        context.request_view_rebuild();
-        EventResult::handled_unfocused()
     }
 }
 
