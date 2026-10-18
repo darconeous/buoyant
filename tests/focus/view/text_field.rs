@@ -22,6 +22,8 @@ struct State {
     drafts: [EditBuffer<heapless::String<16>>; 2],
     shown: usize,
     sent: heapless::Vec<heapless::String<16>, 4>,
+    /// What the field said each time it became active or inactive.
+    activity: heapless::Vec<bool, 8>,
 }
 
 fn field(
@@ -397,4 +399,28 @@ fn the_field_shows_shared_text_without_copying_it() {
         &shown.0,
         &app.state().draft.storage().0
     ));
+}
+
+fn reporting(state: &State) -> impl View<(), State> + use<> {
+    TextField::new(&state.drafts[0], &FONT, |s: &mut State| s.drafts.get_mut(0))
+        .on_submit(|s: &mut State| s.drafts[0].clear())
+        .on_active(|s: &mut State, active| _ = s.activity.push(active))
+}
+
+#[test]
+fn the_field_says_when_it_becomes_active_and_inactive() {
+    let mut app = app("", 5, reporting);
+    assert!(app.state().activity.is_empty());
+
+    // Typing starts the edit, once; submitting ends it.
+    assert!(app.key_down(Key::Character('a')).is_handled());
+    assert!(app.key_down(Key::Character('b')).is_handled());
+    assert_eq!(app.state().activity, [true]);
+    assert!(app.key_down(Key::Enter).is_handled());
+    assert_eq!(app.state().activity, [true, false]);
+
+    // A press starts it and ends it.
+    assert!(app.select().is_handled());
+    assert!(app.select().is_handled());
+    assert_eq!(app.state().activity, [true, false, true, false]);
 }

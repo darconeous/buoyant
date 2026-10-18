@@ -303,6 +303,26 @@ impl<C: ?Sized> OnSubmit<C> for NoSubmit {
     }
 }
 
+/// What a field does when it becomes active or inactive.
+pub trait OnActive<C: ?Sized> {
+    /// The field became active, or inactive.
+    fn on_active(&self, captures: &mut C, active: bool);
+}
+
+impl<C: ?Sized, F: Fn(&mut C, bool)> OnActive<C> for F {
+    fn on_active(&self, captures: &mut C, active: bool) {
+        self(captures, active);
+    }
+}
+
+/// A field that tells no one when it becomes active.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NoActive;
+
+impl<C: ?Sized> OnActive<C> for NoActive {
+    fn on_active(&self, _captures: &mut C, _active: bool) {}
+}
+
 /// Whether a [`TextField`] is focused and whether it is being edited, for
 /// the field's label to show.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -341,10 +361,11 @@ impl TextFieldStatus {
 /// Like a [`Button`](crate::view::Button)'s, the field's look comes from a
 /// label function, given the field's [`TextFieldStatus`] and its
 /// [`TextArea`] to place, as with [`with_label`](Self::with_label).
-pub struct TextField<'a, B, F: Font, L, S, ViewFn> {
+pub struct TextField<'a, B, F: Font, L, S, ViewFn, A = NoActive> {
     buffer: EditBuffer<B>,
     lens: L,
     on_submit: S,
+    on_active: A,
     font: &'a F,
     attributes: F::Attributes,
     max_lines: u16,
@@ -355,8 +376,8 @@ pub struct TextField<'a, B, F: Font, L, S, ViewFn> {
 /// The label of a field that shows only its text.
 pub type PlainLabel<'a, B, F> = fn(TextFieldStatus, TextArea<'a, B, F>) -> TextArea<'a, B, F>;
 
-impl<B: EditText + core::fmt::Debug, F: Font, L, S, ViewFn> core::fmt::Debug
-    for TextField<'_, B, F, L, S, ViewFn>
+impl<B: EditText + core::fmt::Debug, F: Font, L, S, ViewFn, A> core::fmt::Debug
+    for TextField<'_, B, F, L, S, ViewFn, A>
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TextField")
@@ -382,6 +403,7 @@ impl<'a, B: EditText, F: Font, L> TextField<'a, B, F, L, NoSubmit, PlainLabel<'a
             buffer: buffer.clone(),
             lens,
             on_submit: NoSubmit,
+            on_active: NoActive,
             font,
             attributes: F::Attributes::default(),
             max_lines: 1,
@@ -391,17 +413,39 @@ impl<'a, B: EditText, F: Font, L> TextField<'a, B, F, L, NoSubmit, PlainLabel<'a
     }
 }
 
-impl<'a, B: EditText, F: Font, L, S, ViewFn> TextField<'a, B, F, L, S, ViewFn> {
+impl<'a, B: EditText, F: Font, L, S, ViewFn, A> TextField<'a, B, F, L, S, ViewFn, A> {
     /// Runs `on_submit` when Enter is pressed while the field is active.
     #[must_use]
     pub fn on_submit<C: ?Sized, T: Fn(&mut C)>(
         self,
         on_submit: T,
-    ) -> TextField<'a, B, F, L, T, ViewFn> {
+    ) -> TextField<'a, B, F, L, T, ViewFn, A> {
         TextField {
             buffer: self.buffer,
             lens: self.lens,
             on_submit,
+            on_active: self.on_active,
+            font: self.font,
+            attributes: self.attributes,
+            max_lines: self.max_lines,
+            caret_width: self.caret_width,
+            label: self.label,
+        }
+    }
+
+    /// Runs `on_active` each time the field becomes active or inactive,
+    /// with which: so that what goes with editing, such as a keyboard's
+    /// state, can begin and end with it.
+    #[must_use]
+    pub fn on_active<C: ?Sized, T: Fn(&mut C, bool)>(
+        self,
+        on_active: T,
+    ) -> TextField<'a, B, F, L, S, ViewFn, T> {
+        TextField {
+            buffer: self.buffer,
+            lens: self.lens,
+            on_submit: self.on_submit,
+            on_active,
             font: self.font,
             attributes: self.attributes,
             max_lines: self.max_lines,
@@ -412,7 +456,7 @@ impl<'a, B: EditText, F: Font, L, S, ViewFn> TextField<'a, B, F, L, S, ViewFn> {
 
     /// Draws the field with `label`, given its status and its text area.
     #[must_use]
-    pub fn with_label<Inner, T>(self, label: T) -> TextField<'a, B, F, L, S, T>
+    pub fn with_label<Inner, T>(self, label: T) -> TextField<'a, B, F, L, S, T, A>
     where
         T: Fn(TextFieldStatus, TextArea<'a, B, F>) -> Inner,
     {
@@ -420,6 +464,7 @@ impl<'a, B: EditText, F: Font, L, S, ViewFn> TextField<'a, B, F, L, S, ViewFn> {
             buffer: self.buffer,
             lens: self.lens,
             on_submit: self.on_submit,
+            on_active: self.on_active,
             font: self.font,
             attributes: self.attributes,
             max_lines: self.max_lines,
@@ -457,7 +502,9 @@ impl<'a, B: EditText, F: Font, L, S, ViewFn> TextField<'a, B, F, L, S, ViewFn> {
     }
 }
 
-impl<B: EditText, F: Font<Attributes: CustomSize>, L, S, ViewFn> TextField<'_, B, F, L, S, ViewFn> {
+impl<B: EditText, F: Font<Attributes: CustomSize>, L, S, ViewFn, A>
+    TextField<'_, B, F, L, S, ViewFn, A>
+{
     /// Sets the font size.
     #[must_use]
     pub fn with_font_size(self, size: u32) -> Self {
@@ -468,7 +515,8 @@ impl<B: EditText, F: Font<Attributes: CustomSize>, L, S, ViewFn> TextField<'_, B
     }
 }
 
-impl<'a, B: EditText, F: Font, L, S, ViewFn, Inner> ViewMarker for TextField<'a, B, F, L, S, ViewFn>
+impl<'a, B: EditText, F: Font, L, S, ViewFn, A, Inner> ViewMarker
+    for TextField<'a, B, F, L, S, ViewFn, A>
 where
     ViewFn: Fn(TextFieldStatus, TextArea<'a, B, F>) -> Inner,
     Inner: ViewMarker<Renderables: IntrinsicShape>,
@@ -477,11 +525,12 @@ where
     type Transition = Opacity;
 }
 
-impl<'a, C: ?Sized, B: EditText, F: Font, L, S, ViewFn, Inner> ViewLayout<C>
-    for TextField<'a, B, F, L, S, ViewFn>
+impl<'a, C: ?Sized, B: EditText, F: Font, L, S, ViewFn, A, Inner> ViewLayout<C>
+    for TextField<'a, B, F, L, S, ViewFn, A>
 where
     L: Fn(&mut C) -> Option<&mut EditBuffer<B>>,
     S: OnSubmit<C>,
+    A: OnActive<C>,
     ViewFn: Fn(TextFieldStatus, TextArea<'a, B, F>) -> Inner,
     Inner: ViewLayout<C, Renderables: IntrinsicShape>,
 {
@@ -541,7 +590,8 @@ where
         _focus: &mut Self::FocusTree,
     ) -> EventResult {
         let status = &mut state.0;
-        match event {
+        let was_active = status.active;
+        let result = match event {
             Event::Focus { action, .. } => {
                 if !context.roles.contains(Role::TextEntry) {
                     return EventResult::Deferred;
@@ -558,7 +608,11 @@ where
                 self.handle_key(*key, context, captures, status)
             }
             _ => EventResult::Deferred,
+        };
+        if state.0.active != was_active {
+            self.on_active.on_active(captures, state.0.active);
         }
+        result
     }
 
     fn seek(
@@ -586,7 +640,7 @@ where
     }
 }
 
-impl<B: EditText, F: Font, L, S, ViewFn> TextField<'_, B, F, L, S, ViewFn> {
+impl<B: EditText, F: Font, L, S, ViewFn, A> TextField<'_, B, F, L, S, ViewFn, A> {
     fn handle_focus<C: ?Sized>(
         &self,
         action: FocusAction,
