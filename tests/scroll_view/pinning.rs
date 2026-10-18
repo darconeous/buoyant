@@ -516,3 +516,63 @@ fn pinning_not_active_at_top_of_scrollable_content() {
         &buffer.text
     );
 }
+
+/// A log viewer that goes to its end each time `generation` changes
+fn requested_log_viewer(text: &str, generation: u32) -> impl View<char, ()> {
+    ScrollView::new(Text::new(text, &CharacterBufferFont))
+        .with_direction(ScrollDirection::Vertical)
+        .with_end_generation(generation)
+        .with_bar_visibility(buoyant::view::scroll_view::ScrollBarVisibility::Never)
+        .padding(Edges::All, 1)
+}
+
+#[test]
+fn a_new_end_generation_scrolls_to_the_end_and_the_first_does_not() {
+    let mut buffer = FixedTextBuffer::<12, 5>::default();
+    let size = Size::new(12, 5);
+    let text = "Line1\nLine2\nLine3\nLine4\nLine5\nLine6";
+    let mut captures = ();
+
+    let view = requested_log_viewer(text, 7);
+    let mut state = view.build_state(&mut captures);
+    let tree = helpers::tree(
+        &view,
+        &mut captures,
+        &mut state,
+        Duration::from_secs(1),
+        size,
+    );
+    tree.render(&mut buffer, &' ');
+    assert_str_grid_eq!(
+        [
+            "            ",
+            " Line1      ",
+            " Line2      ",
+            " Line3      ",
+            "            ",
+        ],
+        &buffer.text
+    );
+
+    // Where the content is headed: the glide gets there over time.
+    let view = requested_log_viewer(text, 8);
+    let tree = helpers::tree(
+        &view,
+        &mut captures,
+        &mut state,
+        Duration::from_secs(2),
+        size,
+    );
+    buffer.clear();
+    tree.render(&mut buffer, &' ');
+    assert_str_grid_eq!(
+        [
+            "            ",
+            " Line4      ",
+            " Line5      ",
+            " Line6      ",
+            "            ",
+        ],
+        &buffer.text
+    );
+}

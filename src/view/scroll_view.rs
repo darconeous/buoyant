@@ -133,6 +133,7 @@ pub struct ScrollView<Inner> {
     scroll_step: u32,
     short_content_at_end: bool,
     glide_time: Duration,
+    end_generation: Option<u32>,
 }
 
 impl<Inner: ViewMarker> ScrollView<Inner> {
@@ -148,6 +149,7 @@ impl<Inner: ViewMarker> ScrollView<Inner> {
             scroll_step: 0,
             short_content_at_end: false,
             glide_time: GLIDE_TIME,
+            end_generation: None,
         }
     }
 
@@ -211,6 +213,20 @@ impl<Inner: ViewMarker> ScrollView<Inner> {
     #[must_use]
     pub fn with_initial_pin_to_end(mut self, pin: bool) -> Self {
         self.initial_pin_to_end = pin;
+        self
+    }
+
+    /// Scrolls to the end of the content each time `generation` changes, and
+    /// pins it there as [`with_initial_pin_to_end`] does, until the content
+    /// is scrolled away from the end again. The first value only records it.
+    ///
+    /// A count of the things that call for the end, such as messages sent,
+    /// serves.
+    ///
+    /// [`with_initial_pin_to_end`]: Self::with_initial_pin_to_end
+    #[must_use]
+    pub fn with_end_generation(mut self, generation: u32) -> Self {
+        self.end_generation = Some(generation);
         self
     }
 
@@ -307,6 +323,8 @@ pub struct ScrollViewState<InnerState> {
     focused_group: FocusGroup,
     /// How the content moves to where it is headed, from its first layout.
     glide: Option<Glide>,
+    /// The end generation last acted on.
+    end_generation: Option<u32>,
 }
 
 /// Whether an offset leaves the content pinned to its end along each axis.
@@ -322,6 +340,16 @@ fn pinning_for(offset: Point, scroll_size: Size, inner_size: Size) -> ContentPin
 }
 
 impl<Inner> ScrollView<Inner> {
+    /// Pinned to the end of the content along the axes it scrolls.
+    const fn end_pinning(&self) -> ContentPinning {
+        let (horizontal, vertical) = match self.direction {
+            ScrollDirection::Vertical => (false, true),
+            ScrollDirection::Horizontal => (true, false),
+            ScrollDirection::Both => (true, true),
+        };
+        ContentPinning::Pinned(horizontal, vertical)
+    }
+
     /// Where `frame`, a shape within the content, is on screen, with the
     /// focus margin around it.
     fn focus_frame<R>(&self, frame: &Rectangle, render_tree: &ScrollRenderable<R>) -> Rectangle {
@@ -543,12 +571,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
 
     fn build_state(&self, captures: &mut Captures) -> Self::State {
         let content_pinning = if self.initial_pin_to_end {
-            let (horizontal, vertical) = match self.direction {
-                ScrollDirection::Vertical => (false, true),
-                ScrollDirection::Horizontal => (true, false),
-                ScrollDirection::Both => (true, true),
-            };
-            ContentPinning::Pinned(horizontal, vertical)
+            self.end_pinning()
         } else {
             ContentPinning::Floating
         };
@@ -562,6 +585,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             focused_shape: ContentShape::Empty,
             focused_group: crate::focus::GROUP_0,
             glide: None,
+            end_generation: self.end_generation,
         }
     }
 
@@ -626,6 +650,16 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
 
         let permitted_offset_x = inner_view_width.saturating_sub(scroll_view_width) as i32;
         let permitted_offset_y = inner_view_height.saturating_sub(scroll_view_height) as i32;
+
+        // Asked for the end since the last layout: pinned there, as if the
+        // content had been scrolled there by hand.
+        if state.interaction == ScrollInteraction::Idle
+            && self.end_generation != state.end_generation
+        {
+            state.end_generation = self.end_generation;
+            state.content_pinning = self.end_pinning();
+            state.follows_focus = false;
+        }
 
         // Adjust scroll offset if pinning is enabled
         if state.interaction == ScrollInteraction::Idle
