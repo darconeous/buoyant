@@ -220,3 +220,69 @@ fn a_row_taller_than_the_view_is_stepped_through_going_up() {
     assert_eq!(steps, (TALL - VIEW).div_ceil(STEP));
     assert_eq!(app.previous().key(), Some(FocusKey(0)));
 }
+
+const BESIDE: u32 = 60;
+
+/// Three rows between content that takes no focus, at most `step` at a
+/// time, with focus kept from leaving.
+fn between(state: &State, step: u32) -> impl View<(), State> + use<> {
+    let keys = state.rows.clone();
+    ScrollView::new(VStack::new((
+        Rectangle.frame_sized(50, BESIDE),
+        ForEach::<8>::new_vertical(&SLOTS[..keys.len()], |_| {
+            Button::new(|_: &mut State| {}, |_| Rectangle).frame_sized(50, ROW)
+        })
+        .keyed(move |&slot| FocusKey(keys[slot])),
+        Rectangle.frame_sized(50, BESIDE),
+    )))
+    .with_bar_visibility(ScrollBarVisibility::Never)
+    .with_scroll_step(step)
+    .bound_focus(buoyant::focus::BoundaryBehavior::Stop)
+}
+
+fn between_at_once(state: &State) -> impl View<(), State> + use<> {
+    between(state, 0)
+}
+
+fn between_by_step(state: &State) -> impl View<(), State> + use<> {
+    between(state, 20)
+}
+
+#[test]
+fn turning_past_the_last_row_shows_what_follows() {
+    let mut app = app(with_rows(3), between_at_once);
+    assert!(app.focus_forward().is_handled());
+    assert_eq!(app.next().key(), Some(FocusKey(1)));
+    assert_eq!(app.next().key(), Some(FocusKey(2)));
+    assert_eq!(span(app.focus_shape()).1, VIEW as i32);
+
+    // Without a step, the rest scrolls into view at once; focus stays.
+    assert_eq!(app.next().key(), Some(FocusKey(2)));
+    assert_eq!(span(app.focus_shape()).1, VIEW as i32 - BESIDE as i32);
+    assert_eq!(app.next().key(), Some(FocusKey(2)));
+    assert_eq!(span(app.focus_shape()).1, VIEW as i32 - BESIDE as i32);
+
+    // A rebuild leaves it there.
+    app.force_rebuild();
+    assert_eq!(span(app.focus_shape()).1, VIEW as i32 - BESIDE as i32);
+}
+
+#[test]
+fn turning_past_the_first_row_scrolls_back_a_step_at_a_time() {
+    let mut app = app(with_rows(3), between_by_step);
+    assert!(app.focus_forward().is_handled());
+    assert_eq!(app.next().key(), Some(FocusKey(1)));
+    assert_eq!(app.next().key(), Some(FocusKey(2)));
+    assert_eq!(app.previous().key(), Some(FocusKey(1)));
+    assert_eq!(app.previous().key(), Some(FocusKey(0)));
+    // Scrolled down to the third row, the first is now at the top.
+    assert_eq!(span(app.focus_shape()).0, 0);
+
+    for top in [20, 40, 60] {
+        assert_eq!(app.previous().key(), Some(FocusKey(0)));
+        assert_eq!(span(app.focus_shape()).0, top);
+    }
+    // The content's start is in view: focus stays, and nothing moves.
+    assert_eq!(app.previous().key(), Some(FocusKey(0)));
+    assert_eq!(span(app.focus_shape()).0, BESIDE as i32);
+}

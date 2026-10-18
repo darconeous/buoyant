@@ -7,7 +7,7 @@ use embedded_touch::{Phase, Touch};
 use crate::{
     animation::Animation,
     event::{Event, EventContext, EventResult, TouchResult},
-    focus::{FocusAction, FocusGroup, FocusKey, Seek, SeekResult},
+    focus::{FocusAction, FocusDirection, FocusGroup, FocusKey, Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{
         Dimensions, Point, ProposedDimension, ProposedDimensions, Size, geometry::Rectangle,
@@ -424,6 +424,86 @@ impl<Inner> ScrollView<Inner> {
     }
 }
 
+impl<Inner> ScrollView<Inner> {
+    /// Focus turned past the first or last element that takes it: the
+    /// content beyond, which takes none, scrolls into view a step at a time
+    /// (all at once without a step), with focus kept where it was. Returns
+    /// `None` once there is no more of it, so the turn goes on to whatever
+    /// bounds the focus.
+    #[expect(clippy::too_many_arguments)]
+    fn scroll_past_boundary<Captures>(
+        &self,
+        action: FocusAction,
+        group: FocusGroup,
+        context: &EventContext,
+        render_tree: &mut ScrollRenderable<Inner::Renderables>,
+        captures: &mut Captures,
+        state: &mut ScrollViewState<Inner::State>,
+        focus: &mut Inner::FocusTree,
+    ) -> Option<EventResult>
+    where
+        Inner: ViewLayout<Captures>,
+    {
+        let forward = match action {
+            FocusAction::Next => true,
+            FocusAction::Previous => false,
+            _ => return None,
+        };
+        if state.interaction != ScrollInteraction::Idle
+            || self.direction == ScrollDirection::Horizontal
+        {
+            return None;
+        }
+        let permitted = render_tree
+            .inner_size
+            .height
+            .saturating_sub(render_tree.scroll_size.height) as i32;
+        let left = if forward {
+            permitted + state.scroll_offset.y
+        } else {
+            -state.scroll_offset.y
+        };
+        if left <= 0 {
+            return None;
+        }
+        // Back onto the element the turn went past, as bounded focus would.
+        let EventResult::Handled { shape, key, group } = self.inner.handle_event(
+            &Event::Focus {
+                action: FocusAction::Focus(if forward {
+                    FocusDirection::Backward
+                } else {
+                    FocusDirection::Forward
+                }),
+                group,
+            },
+            context,
+            render_tree.inner_mut(),
+            captures,
+            &mut state.inner_state,
+            focus,
+        ) else {
+            return None;
+        };
+        let step = match self.scroll_step as i32 {
+            0 => left,
+            step => step.min(left),
+        };
+        let mut offset = state.scroll_offset;
+        offset.y += if forward { -step } else { step };
+        self.scroll_to(offset, context, render_tree, state);
+        // As if scrolled by hand: a rebuild must not scroll back to focus.
+        state.follows_focus = false;
+        state.focused_key = key;
+        state.focused_shape = shape.clone();
+        state.focused_group = group;
+        Some(EventResult::Handled {
+            shape: shape.with_offset(render_tree.offset() + render_tree.inner.offset),
+            group,
+            key,
+        })
+    }
+}
+
 impl<Inner: ViewMarker> ViewMarker for ScrollView<Inner> {
     type Renderables = ScrollRenderable<Inner::Renderables>;
     type Transition = Opacity;
@@ -640,6 +720,20 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                 &mut state.inner_state,
                 focus,
             );
+
+            if matches!(result, EventResult::Deferred)
+                && let Some(past) = self.scroll_past_boundary(
+                    *focus_event,
+                    *group,
+                    context,
+                    render_tree,
+                    captures,
+                    state,
+                    focus,
+                )
+            {
+                return past;
+            }
 
             if let EventResult::Handled {
                 shape,
