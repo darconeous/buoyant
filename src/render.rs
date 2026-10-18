@@ -44,7 +44,7 @@ pub use lazy::Lazy;
 pub use offset::Offset;
 pub use one_of::{OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, OneOf9, OneOf10};
 pub use opacity::Opacity;
-pub use scroll_renderable::ScrollRenderable;
+pub use scroll_renderable::{Glide, ScrollRenderable};
 pub use shade_subtree::ShadeSubtree;
 pub use shape::Capsule;
 pub use shape::Circle;

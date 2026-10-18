@@ -5,17 +5,20 @@ use core::time::Duration;
 use embedded_touch::{Phase, Touch};
 
 use crate::{
-    animation::Animation,
     event::{Event, EventContext, EventResult, TouchResult},
     focus::{FocusAction, FocusDirection, FocusGroup, FocusKey, Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{
         Dimensions, Point, ProposedDimension, ProposedDimensions, Size, geometry::Rectangle,
     },
-    render::{Animate, Capsule, ContentShape, Offset, ScrollRenderable},
+    render::{Capsule, ContentShape, Glide, Offset, ScrollRenderable},
     transition::Opacity,
     view::{ViewLayout, ViewMarker},
 };
+
+/// How long the content takes to come to rest after it scrolls, unless
+/// [`ScrollView::with_glide_time`] says otherwise.
+const GLIDE_TIME: Duration = Duration::from_millis(200);
 
 /// The axes along which the scroll view can scroll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -129,6 +132,7 @@ pub struct ScrollView<Inner> {
     focus_margin: u32,
     scroll_step: u32,
     short_content_at_end: bool,
+    glide_time: Duration,
 }
 
 impl<Inner: ViewMarker> ScrollView<Inner> {
@@ -143,7 +147,20 @@ impl<Inner: ViewMarker> ScrollView<Inner> {
             focus_margin: 0,
             scroll_step: 0,
             short_content_at_end: false,
+            glide_time: GLIDE_TIME,
         }
+    }
+
+    /// How long the content takes to come to rest after it scrolls, other
+    /// than by dragging: about this long for a step of a few rows.
+    ///
+    /// The content moves as a critically damped spring. Scrolled again on
+    /// the way, it carries on from where it is and how fast it is moving.
+    /// Zero moves it at once.
+    #[must_use]
+    pub fn with_glide_time(mut self, time: Duration) -> Self {
+        self.glide_time = time;
+        self
     }
 
     /// Steps through a focused element longer than the view, this far at a
@@ -288,6 +305,8 @@ pub struct ScrollViewState<InnerState> {
     /// The shape of the focused element within the content, and its group.
     focused_shape: ContentShape,
     focused_group: FocusGroup,
+    /// How the content moves to where it is headed, from its first layout.
+    glide: Option<Glide>,
 }
 
 /// Whether an offset leaves the content pinned to its end along each axis.
@@ -340,7 +359,11 @@ impl<Inner> ScrollView<Inner> {
         context.request_redraw();
         state.scroll_offset = offset;
         state.content_pinning = pinning_for(offset, scroll_size, inner_size);
-        *render_tree.offset_mut() = offset + self.content_shift(scroll_size, inner_size);
+        let destination = offset + self.content_shift(scroll_size, inner_size);
+        *render_tree.offset_mut() = destination;
+        let glide = state.glide.get_or_insert(render_tree.glide);
+        glide.head_for(destination, context.app_time, self.glide_time);
+        render_tree.glide = *glide;
         let (horizontal_bar, vertical_bar) =
             self.scroll_bars(Point::zero(), scroll_size, inner_size, offset);
         render_tree.set_bars(horizontal_bar, vertical_bar);
@@ -538,6 +561,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             focused_key: None,
             focused_shape: ContentShape::Empty,
             focused_group: crate::focus::GROUP_0,
+            glide: None,
         }
     }
 
@@ -667,24 +691,21 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             &mut state.inner_state,
         );
         let offset = Offset::new(inner_origin, inner_render_tree);
-        let animation_time = if is_dragging {
-            Duration::from_millis(0)
-        } else {
-            Duration::from_millis(300)
+        // Dragged, the content follows the touch; otherwise it glides to
+        // where it is headed, from wherever it was on its way somewhere else.
+        let glide = match &mut state.glide {
+            Some(glide) if !is_dragging => {
+                glide.head_for(inner_origin, env.app_time(), self.glide_time);
+                *glide
+            }
+            glide => *glide.insert(Glide::at_rest(inner_origin)),
         };
 
         ScrollRenderable::new(
             scroll_size,
             inner_size,
-            Offset::new(
-                origin,
-                Animate::new(
-                    (offset, horizontal_bar, vertical_bar),
-                    Animation::ease_out_cubic(animation_time),
-                    env.app_time(),
-                    is_dragging,
-                ),
-            ),
+            Offset::new(origin, (offset, horizontal_bar, vertical_bar)),
+            glide,
         )
     }
 
@@ -875,8 +896,11 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
 
                 offset
             };
-            *render_tree.offset_mut() = subview_offset
+            let destination = subview_offset
                 + self.content_shift(render_tree.scroll_size, render_tree.inner_size);
+            *render_tree.offset_mut() = destination;
+            // Dragged, the content follows the touch.
+            render_tree.glide = *state.glide.insert(Glide::at_rest(destination));
             let (horizontal_bar, vertical_bar) = self.scroll_bars(
                 Point::zero(),
                 render_tree.scroll_size,
@@ -1052,9 +1076,8 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
 
                     context.request_view_rebuild();
                     if target == InteractionTarget::Scroll {
-                        // If we don't set this, the scroll view will not animate the
-                        // snap back
-                        render_tree.inner.subtree.value = true;
+                        // The rebuild glides the content back within its bounds
+                        // from where the touch left it.
                         (TouchResult::Handled, delta)
                     } else {
                         let touch_offset = render_tree.offset() + render_tree.inner.offset;
@@ -1158,8 +1181,11 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
 
                 offset
             };
-            *render_tree.offset_mut() = subview_offset
+            let destination = subview_offset
                 + self.content_shift(render_tree.scroll_size, render_tree.inner_size);
+            *render_tree.offset_mut() = destination;
+            // Dragged, the content follows the touch.
+            render_tree.glide = *state.glide.insert(Glide::at_rest(destination));
             let (horizontal_bar, vertical_bar) = self.scroll_bars(
                 Point::zero(),
                 render_tree.scroll_size,

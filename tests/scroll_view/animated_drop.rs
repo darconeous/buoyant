@@ -107,7 +107,9 @@ fn scroll_down_animates_back() {
         size,
     );
     buffer.clear();
-    // This time is arbitrary, if the the scroll animation duration changes, this should be updated
+    // 50 ms into gliding back from three rows down, the content has come
+    // about one and a half rows: its second row is still below the view.
+    // If the glide time changes, update this.
     Render::render_animated(
         &mut buffer,
         &render_tree,
@@ -119,7 +121,7 @@ fn scroll_down_animates_back() {
         [
             "            ",
             "            ",
-            " aaaaaaaaaa ",
+            "            ",
             " aaaaaaaaaa ",
             "            ",
         ],
