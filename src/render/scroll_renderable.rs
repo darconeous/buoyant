@@ -152,10 +152,12 @@ pub struct Glide {
     /// in [`Glide::SCALE`]ths of a pixel and of a pixel per second.
     from: [i32; 2],
     velocity: [i32; 2],
-    start: Duration,
-    /// How long a step of a few rows takes to come to rest. Zero moves at
-    /// once.
-    settle: Duration,
+    /// In milliseconds of app time. Milliseconds rather than durations keep
+    /// the glide, and every render tree with a scroll view, small.
+    start: u64,
+    /// How long a step of a few rows takes to come to rest, in milliseconds.
+    /// Zero moves at once.
+    settle: u16,
 }
 
 impl Glide {
@@ -175,8 +177,8 @@ impl Glide {
             to,
             from: [to.x * Self::SCALE as i32, to.y * Self::SCALE as i32],
             velocity: [0, 0],
-            start: Duration::ZERO,
-            settle: Duration::ZERO,
+            start: 0,
+            settle: 0,
         }
     }
 
@@ -201,8 +203,8 @@ impl Glide {
             to,
             from: at.map(|p| round(p * Self::SCALE)),
             velocity: velocity.map(|v| round(v * Self::SCALE)),
-            start: now,
-            settle,
+            start: u64::try_from(now.as_millis()).unwrap_or(u64::MAX),
+            settle: u16::try_from(settle.as_millis()).unwrap_or(u16::MAX),
         };
     }
 
@@ -224,11 +226,13 @@ impl Glide {
     /// per second.
     fn sample(&self, now: Duration) -> ([f32; 2], [f32; 2]) {
         let to = [float(self.to.x), float(self.to.y)];
-        if self.settle.is_zero() {
+        if self.settle == 0 {
             return (to, [0.0; 2]);
         }
-        let omega = Self::STIFFNESS / self.settle.as_secs_f32();
-        let t = now.saturating_sub(self.start).as_secs_f32();
+        let omega = Self::STIFFNESS * 1000.0 / f32::from(self.settle);
+        let t = now
+            .saturating_sub(Duration::from_millis(self.start))
+            .as_secs_f32();
         let decay = exp_neg(omega * t);
         let mut at = [0.0; 2];
         let mut velocity = [0.0; 2];
