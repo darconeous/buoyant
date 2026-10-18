@@ -683,6 +683,17 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             self.scroll_bars(Point::zero(), scroll_size, inner_size, subview_offset);
 
         let inner_origin = subview_offset + self.content_shift(scroll_size, inner_size);
+        // Dragged, the content follows the touch; otherwise it glides to
+        // where it is headed, from wherever it was on its way somewhere else.
+        // Settled before the content is built, so that the content, which can
+        // be large, is not held on the stack across the call.
+        let glide = match &mut state.glide {
+            Some(glide) if !is_dragging => {
+                glide.head_for(inner_origin, env.app_time(), self.glide_time);
+                *glide
+            }
+            glide => *glide.insert(Glide::at_rest(inner_origin)),
+        };
         let inner_render_tree = self.inner.render_tree(
             &inner_layout.sublayouts,
             Point::zero(),
@@ -691,15 +702,6 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             &mut state.inner_state,
         );
         let offset = Offset::new(inner_origin, inner_render_tree);
-        // Dragged, the content follows the touch; otherwise it glides to
-        // where it is headed, from wherever it was on its way somewhere else.
-        let glide = match &mut state.glide {
-            Some(glide) if !is_dragging => {
-                glide.head_for(inner_origin, env.app_time(), self.glide_time);
-                *glide
-            }
-            glide => *glide.insert(Glide::at_rest(inner_origin)),
-        };
 
         ScrollRenderable::new(
             scroll_size,
