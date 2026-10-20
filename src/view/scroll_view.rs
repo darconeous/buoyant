@@ -20,6 +20,23 @@ use crate::{
 /// [`ScrollView::with_glide_time`] says otherwise.
 const GLIDE_TIME: Duration = Duration::from_millis(200);
 
+/// Flung content slows by a factor of e over this time as it coasts.
+const FLING_COAST: Duration = Duration::from_millis(325);
+
+/// How a touch lifting from a drag was moving is measured over this much
+/// time before it lifted, in milliseconds. A touch held still for longer
+/// before lifting does not fling.
+const FLING_WINDOW: u32 = 100;
+
+/// A touch lifting slower than this, in pixels per second, does not fling.
+const FLING_MIN_SPEED: f32 = 100.0;
+
+/// The fastest a touch flings the content, in pixels per second.
+const FLING_MAX_SPEED: f32 = 4000.0;
+
+/// How many of the latest places a dragging touch was are kept.
+const TRACK_LENGTH: usize = 4;
+
 /// The axes along which the scroll view can scroll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScrollDirection {
@@ -283,7 +300,66 @@ enum ScrollInteraction {
         last_point: Point,
         target: InteractionTarget,
         touch_id: u8,
+        track: Track,
     },
+}
+
+/// The latest places a dragging touch was, and when, to tell how fast it was
+/// moving as it lifted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Track {
+    /// Oldest first.
+    points: [Point; TRACK_LENGTH],
+    /// In milliseconds of app time, wrapping.
+    times: [u32; TRACK_LENGTH],
+    len: u8,
+}
+
+impl Track {
+    fn new(point: Point, now: Duration) -> Self {
+        let mut track = Self::default();
+        track.push(point, now);
+        track
+    }
+
+    fn push(&mut self, point: Point, now: Duration) {
+        let mut len = usize::from(self.len);
+        if len == TRACK_LENGTH {
+            self.points.copy_within(1.., 0);
+            self.times.copy_within(1.., 0);
+            len -= 1;
+        }
+        self.points[len] = point;
+        self.times[len] = Self::millis(now);
+        self.len = (len + 1) as u8;
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "times wrap, and only differences between them are taken"
+    )]
+    const fn millis(now: Duration) -> u32 {
+        now.as_millis() as u32
+    }
+
+    /// How fast the touch moved over the last [`FLING_WINDOW`], in pixels per
+    /// second.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixel distances and milliseconds stay far below 2^24"
+    )]
+    fn velocity(&self) -> Option<[f32; 2]> {
+        let last = usize::from(self.len).checked_sub(1)?;
+        let (to, end) = (self.points[last], self.times[last]);
+        let first = (0..last).find(|&i| end.wrapping_sub(self.times[i]) <= FLING_WINDOW)?;
+        let elapsed = end.wrapping_sub(self.times[first]);
+        if elapsed == 0 {
+            return None;
+        }
+        let moved = to - self.points[first];
+        let per_second = 1000.0 / elapsed as f32;
+        Some([moved.x as f32 * per_second, moved.y as f32 * per_second])
+    }
 }
 
 /// Tracks the intended target.
@@ -353,6 +429,92 @@ impl<Inner> ScrollView<Inner> {
     /// Where the content's origin is placed.
     fn content_origin<R>(render_tree: &ScrollRenderable<R>) -> Point {
         render_tree.offset() + render_tree.inner.offset
+    }
+
+    /// How far the content can scroll along each axis.
+    fn permitted(scroll_size: Size, inner_size: Size) -> Point {
+        Point::new(
+            inner_size.width.saturating_sub(scroll_size.width) as i32,
+            inner_size.height.saturating_sub(scroll_size.height) as i32,
+        )
+    }
+
+    /// Where content dragged to `offset` is: movement beyond the bounds is
+    /// reduced by half.
+    fn dragged(offset: Point, scroll_size: Size, inner_size: Size) -> Point {
+        let permitted = Self::permitted(scroll_size, inner_size);
+        let axis = |offset: i32, permitted: i32| {
+            if offset > 0 {
+                offset / 2
+            } else if -offset > permitted {
+                offset.midpoint(permitted) - permitted
+            } else {
+                offset
+            }
+        };
+        Point::new(axis(offset.x, permitted.x), axis(offset.y, permitted.y))
+    }
+
+    /// The offset a drag leaves content at, where it is at `at`: the inverse
+    /// of [`Self::dragged`].
+    fn undragged(at: Point, scroll_size: Size, inner_size: Size) -> Point {
+        let permitted = Self::permitted(scroll_size, inner_size);
+        let axis = |at: i32, permitted: i32| {
+            if at > 0 {
+                at * 2
+            } else if -at > permitted {
+                at * 2 + permitted
+            } else {
+                at
+            }
+        };
+        Point::new(axis(at.x, permitted.x), axis(at.y, permitted.y))
+    }
+
+    /// Lets the content go at `velocity`, from where the drag left it: it
+    /// coasts on to rest, or to the bound in its way.
+    fn fling<R, S>(
+        &self,
+        velocity: [f32; 2],
+        now: Duration,
+        render_tree: &mut ScrollRenderable<R>,
+        state: &mut ScrollViewState<S>,
+    ) {
+        let (scroll_size, inner_size) = (render_tree.scroll_size, render_tree.inner_size);
+        let shift = self.content_shift(scroll_size, inner_size);
+        let permitted = Self::permitted(scroll_size, inner_size);
+        let from = Self::dragged(state.scroll_offset, scroll_size, inner_size);
+        let stop = Glide::coast_stop(from, velocity, FLING_COAST);
+        let rest = Point::new(stop.x.clamp(-permitted.x, 0), stop.y.clamp(-permitted.y, 0));
+        state.scroll_offset = rest;
+        state.content_pinning = pinning_for(rest, scroll_size, inner_size);
+        state.follows_focus = false;
+        let glide = Glide::fling(
+            from + shift,
+            velocity,
+            rest + shift,
+            now,
+            FLING_COAST,
+            self.glide_time,
+        );
+        render_tree.glide = *state.glide.insert(glide);
+    }
+
+    /// How fast a touch lifting from a drag of the content flings it, along
+    /// the axes it scrolls.
+    fn fling_velocity(&self, track: &Track) -> Option<[f32; 2]> {
+        let [x, y] = track.velocity()?;
+        let [x, y] = match self.direction {
+            ScrollDirection::Vertical => [0.0, y],
+            ScrollDirection::Horizontal => [x, 0.0],
+            ScrollDirection::Both => [x, y],
+        };
+        let speed_squared = x * x + y * y;
+        if self.glide_time.is_zero() || speed_squared < FLING_MIN_SPEED * FLING_MIN_SPEED {
+            return None;
+        }
+        let max = FLING_MAX_SPEED;
+        Some([x.clamp(-max, max), y.clamp(-max, max)])
     }
 
     /// `touch`, where it is on the content, which lays itself out from zero.
@@ -690,30 +852,10 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
         let is_dragging;
         let subview_offset = match state.interaction {
             ScrollInteraction::Dragging { .. } => {
-                // Movement beyond the bounds is reduced by half while dragging
-                is_dragging = true;
-                let mut offset = state.scroll_offset;
-
                 // The offset should be set correctly based on the scroll direction
                 // in the event handler, don't bother checking it here
-
-                if offset.x > 0 {
-                    // Overscrolling on the left
-                    offset.x /= 2;
-                } else if -offset.x > permitted_offset_x {
-                    // Overscrolling on the right
-                    offset.x = offset.x.midpoint(permitted_offset_x) - permitted_offset_x;
-                }
-
-                if offset.y > 0 {
-                    // Overscrolling on the top
-                    offset.y /= 2;
-                } else if -offset.y > permitted_offset_y {
-                    // Overscrolling on the bottom
-                    offset.y = offset.y.midpoint(permitted_offset_y) - permitted_offset_y;
-                }
-
-                offset
+                is_dragging = true;
+                Self::dragged(state.scroll_offset, scroll_size, inner_size)
             }
             ScrollInteraction::Idle => {
                 is_dragging = false;
@@ -920,38 +1062,11 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
         // scroll position changes. If there's scroll jank it's probably related
         // to this optimization.
         if delta != Point::zero() && !context.view_rebuild_requested.get() {
-            let subview_offset = {
-                let permitted_offset_x = render_tree
-                    .inner_size
-                    .width
-                    .saturating_sub(render_tree.scroll_size.width)
-                    as i32;
-                let permitted_offset_y = render_tree
-                    .inner_size
-                    .height
-                    .saturating_sub(render_tree.scroll_size.height)
-                    as i32;
-
-                // Movement beyond the bounds is reduced by half while dragging
-                let mut offset = state.scroll_offset;
-                if offset.x > 0 {
-                    // Overscrolling on the left
-                    offset.x /= 2;
-                } else if -offset.x > permitted_offset_x {
-                    // Overscrolling on the right
-                    offset.x = offset.x.midpoint(permitted_offset_x) - permitted_offset_x;
-                }
-
-                if offset.y > 0 {
-                    // Overscrolling on the top
-                    offset.y /= 2;
-                } else if -offset.y > permitted_offset_y {
-                    // Overscrolling on the bottom
-                    offset.y = offset.y.midpoint(permitted_offset_y) - permitted_offset_y;
-                }
-
-                offset
-            };
+            let subview_offset = Self::dragged(
+                state.scroll_offset,
+                render_tree.scroll_size,
+                render_tree.inner_size,
+            );
             let destination = subview_offset
                 + self.content_shift(render_tree.scroll_size, render_tree.inner_size);
             *render_tree.offset_mut() = destination;
@@ -1013,15 +1128,40 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             );
         }
         let point = touch.location.into();
+        let mut fling = None;
         let (result, delta) = match touch.phase {
             Phase::Started => {
                 let bounds = render_tree.bounds();
+                if bounds.contains(&point) && render_tree.glide.is_coasting(context.app_time) {
+                    // A touch on flung content stops it where it is, and
+                    // drags it from there: it is for the scroll view alone.
+                    let (scroll_size, inner_size) =
+                        (render_tree.scroll_size, render_tree.inner_size);
+                    let at = render_tree.glide.at(context.app_time).0;
+                    state.scroll_offset = Self::undragged(
+                        at - self.content_shift(scroll_size, inner_size),
+                        scroll_size,
+                        inner_size,
+                    );
+                    *render_tree.offset_mut() = at;
+                    render_tree.glide = *state.glide.insert(Glide::at_rest(at));
+                    state.interaction = ScrollInteraction::Dragging {
+                        drag_start: point,
+                        last_point: point,
+                        target: InteractionTarget::Scroll,
+                        touch_id: touch.id,
+                        track: Track::new(point, context.app_time),
+                    };
+                    context.request_redraw();
+                    return TouchResult::Handled;
+                }
                 if bounds.contains(&point) {
                     state.interaction = ScrollInteraction::Dragging {
                         drag_start: point,
                         last_point: point,
                         target: InteractionTarget::Unknown,
                         touch_id: touch.id,
+                        track: Track::new(point, context.app_time),
                     };
 
                     context.request_redraw();
@@ -1046,11 +1186,13 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                     drag_start,
                     last_point,
                     target,
+                    track,
                     ..
                 } => {
                     let delta = point - *last_point;
 
                     *last_point = point;
+                    track.push(point, context.app_time);
                     let total_scroll = point - *drag_start;
 
                     context.request_redraw();
@@ -1125,6 +1267,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                     drag_start: _,
                     last_point,
                     target,
+                    mut track,
                     ..
                 } => {
                     state.interaction = ScrollInteraction::Idle;
@@ -1133,8 +1276,11 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
 
                     context.request_view_rebuild();
                     if target == InteractionTarget::Scroll {
-                        // The rebuild glides the content back within its bounds
-                        // from where the touch left it.
+                        // Lifted moving, the content coasts on. Otherwise the
+                        // rebuild glides it back within its bounds from where
+                        // the touch left it.
+                        track.push(point, context.app_time);
+                        fling = self.fling_velocity(&track);
                         (TouchResult::Handled, delta)
                     } else {
                         let inner_result = self.inner.handle_touch(
@@ -1201,39 +1347,16 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             render_tree.inner_size,
         );
 
+        if let Some(velocity) = fling {
+            self.fling(velocity, context.app_time, render_tree, state);
+        }
+
         if delta != Point::zero() && !context.view_rebuild_requested.get() {
-            let subview_offset = {
-                let permitted_offset_x = render_tree
-                    .inner_size
-                    .width
-                    .saturating_sub(render_tree.scroll_size.width)
-                    as i32;
-                let permitted_offset_y = render_tree
-                    .inner_size
-                    .height
-                    .saturating_sub(render_tree.scroll_size.height)
-                    as i32;
-
-                // Movement beyond the bounds is reduced by half while dragging
-                let mut offset = state.scroll_offset;
-                if offset.x > 0 {
-                    // Overscrolling on the left
-                    offset.x /= 2;
-                } else if -offset.x > permitted_offset_x {
-                    // Overscrolling on the right
-                    offset.x = offset.x.midpoint(permitted_offset_x) - permitted_offset_x;
-                }
-
-                if offset.y > 0 {
-                    // Overscrolling on the top
-                    offset.y /= 2;
-                } else if -offset.y > permitted_offset_y {
-                    // Overscrolling on the bottom
-                    offset.y = offset.y.midpoint(permitted_offset_y) - permitted_offset_y;
-                }
-
-                offset
-            };
+            let subview_offset = Self::dragged(
+                state.scroll_offset,
+                render_tree.scroll_size,
+                render_tree.inner_size,
+            );
             let destination = subview_offset
                 + self.content_shift(render_tree.scroll_size, render_tree.inner_size);
             *render_tree.offset_mut() = destination;

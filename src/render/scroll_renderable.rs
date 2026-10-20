@@ -144,6 +144,9 @@ impl<T: IntrinsicShape> IntrinsicShape for ScrollRenderable<T> {
 /// the content is at that moment and how fast it is moving, so a wheel
 /// turned quickly makes one smooth motion rather than a stutter of
 /// separate ones.
+///
+/// Flung, the content coasts, slowing at a steady rate, and a bound it
+/// reaches on the way takes it as the spring does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Glide {
     /// Where the content is headed.
@@ -158,6 +161,9 @@ pub struct Glide {
     /// How long a step of a few rows takes to come to rest, in milliseconds.
     /// Zero moves at once.
     settle: u16,
+    /// For flung content, the time over which its speed falls by a factor
+    /// of e, in milliseconds. Zero for a spring alone.
+    coast: u16,
 }
 
 impl Glide {
@@ -169,6 +175,9 @@ impl Glide {
     /// Content moving slower than this, in pixels per second, and within
     /// half a pixel of where it is headed, is at rest.
     const REST_SPEED: f32 = 20.0;
+    /// The fastest flung content meets a bound, in pixels per second: the
+    /// spring there takes it from no faster, so it overshoots little.
+    const BOUNCE_SPEED: f32 = 1000.0;
 
     /// Content at rest at `to`.
     #[must_use]
@@ -179,7 +188,49 @@ impl Glide {
             velocity: [0, 0],
             start: 0,
             settle: 0,
+            coast: 0,
         }
+    }
+
+    /// Flings the content from `from` at `velocity`, in pixels per second,
+    /// at `now`. It coasts to rest at `to`, its speed falling by a factor of
+    /// e every `coast`. A `to` short of where it would coast to is a bound:
+    /// reaching it, the content springs to rest there as it would over
+    /// `settle`.
+    #[must_use]
+    pub fn fling(
+        from: Point,
+        velocity: [f32; 2],
+        to: Point,
+        now: Duration,
+        coast: Duration,
+        settle: Duration,
+    ) -> Self {
+        if settle.is_zero() {
+            return Self::at_rest(to);
+        }
+        Self {
+            to,
+            from: [from.x * Self::SCALE as i32, from.y * Self::SCALE as i32],
+            velocity: velocity.map(|v| round(v * Self::SCALE)),
+            start: u64::try_from(now.as_millis()).unwrap_or(u64::MAX),
+            settle: u16::try_from(settle.as_millis()).unwrap_or(u16::MAX),
+            coast: u16::try_from(coast.as_millis()).unwrap_or(u16::MAX),
+        }
+    }
+
+    /// Where content flung from `from` at `velocity` would coast to rest,
+    /// with nothing in its way.
+    #[must_use]
+    pub fn coast_stop(from: Point, velocity: [f32; 2], coast: Duration) -> Point {
+        let travel = velocity.map(|v| round(v * coast.as_secs_f32()));
+        from + Point::new(travel[0], travel[1])
+    }
+
+    /// Flung content still on its way.
+    #[must_use]
+    pub fn is_coasting(&self, now: Duration) -> bool {
+        self.coast != 0 && self.at(now).1
     }
 
     /// Where the content is headed.
@@ -205,6 +256,7 @@ impl Glide {
             velocity: velocity.map(|v| round(v * Self::SCALE)),
             start: u64::try_from(now.as_millis()).unwrap_or(u64::MAX),
             settle: u16::try_from(settle.as_millis()).unwrap_or(u16::MAX),
+            coast: 0,
         };
     }
 
@@ -233,19 +285,68 @@ impl Glide {
         let t = now
             .saturating_sub(Duration::from_millis(self.start))
             .as_secs_f32();
-        let decay = exp_neg(omega * t);
         let mut at = [0.0; 2];
         let mut velocity = [0.0; 2];
         for axis in 0..2 {
-            // x(t) = (x0 + (v0 + ω x0) t) e^(-ωt), measured from `to`.
             let x0 = float(self.from[axis]) / Self::SCALE - to[axis];
             let v0 = float(self.velocity[axis]) / Self::SCALE;
-            let b = v0 + omega * x0;
-            at[axis] = to[axis] + (x0 + b * t) * decay;
-            velocity[axis] = (v0 - omega * b * t) * decay;
+            let (x, v) = if self.coast == 0 {
+                spring(x0, v0, omega, t)
+            } else {
+                coast(x0, v0, 1000.0 / f32::from(self.coast), omega, t)
+            };
+            at[axis] = to[axis] + x;
+            velocity[axis] = v;
         }
         (at, velocity)
     }
+}
+
+/// A critically damped spring at `t`, from `x0` at `v0`, measured from where
+/// it comes to rest: x(t) = (x0 + (v0 + ω x0) t) e^(-ωt).
+fn spring(x0: f32, v0: f32, omega: f32, t: f32) -> (f32, f32) {
+    let decay = exp_neg(omega * t);
+    let b = v0 + omega * x0;
+    ((x0 + b * t) * decay, (v0 - omega * b * t) * decay)
+}
+
+/// Flung content at `t`, from `x0` at `v0`, measured from where it comes to
+/// rest, its speed falling at `rate` per second. Coasting is the spring
+/// whose ω is the rate, sent to where the coast ends; a nearer rest is a
+/// bound, where the spring of `omega` takes over.
+fn coast(x0: f32, v0: f32, rate: f32, omega: f32, t: f32) -> (f32, f32) {
+    let travel = v0 / rate;
+    let ahead = -x0;
+    if travel * ahead > 0.0 && abs(travel) > abs(ahead) + 0.5 {
+        // The bound is reached when e^(-rate t) has fallen to `left`.
+        let left = 1.0 - ahead / travel;
+        let reached = -ln(left) / rate;
+        if t < reached {
+            let decay = exp_neg(rate * t);
+            (x0 + travel * (1.0 - decay), v0 * decay)
+        } else {
+            let bounce = Glide::BOUNCE_SPEED;
+            spring(0.0, (v0 * left).clamp(-bounce, bounce), omega, t - reached)
+        }
+    } else if travel * ahead > 0.0 || abs(travel - ahead) <= 0.5 {
+        spring(x0, v0, rate, t)
+    } else {
+        // Flung away from its rest, as from beyond a bound.
+        spring(x0, v0, omega, t)
+    }
+}
+
+/// ln x, for x above zero, to about six decimal places.
+fn ln(x: f32) -> f32 {
+    // x = m 2^e, with m from one to two: ln m = 2 atanh((m - 1) / (m + 1)).
+    let bits = x.to_bits();
+    let exponent = float(((bits >> 23) & 0xff) as i32 - 127);
+    let m = f32::from_bits((bits & 0x007f_ffff) | 0x3f80_0000);
+    let z = (m - 1.0) / (m + 1.0);
+    let z2 = z * z;
+    let series =
+        2.0 * z * (1.0 + z2 * (1.0 / 3.0 + z2 * (1.0 / 5.0 + z2 * (1.0 / 7.0 + z2 / 9.0))));
+    exponent * LN_2 + series
 }
 
 /// e^-x, for x of zero or more, to about four decimal places.
@@ -351,6 +452,84 @@ mod tests {
         assert!(abs(before_speed[1] - after_speed[1]) < 0.5);
         // And on to the new destination.
         assert_eq!(glide.at(ms(400)), (Point::new(0, -80), false));
+    }
+
+    const COAST: Duration = Duration::from_millis(300);
+
+    #[test]
+    fn ln_matches_the_logarithm() {
+        for i in 1..400_u16 {
+            let x = f32::from(i) / 100.0;
+            assert!(
+                abs(series_exp_neg(-ln(x)) - x) <= 2e-5 * x.max(1.0),
+                "x = {x}"
+            );
+        }
+    }
+
+    #[test]
+    fn flung_content_coasts_to_rest() {
+        let from = Point::new(0, 0);
+        let velocity = [0.0, -1000.0];
+        let to = Glide::coast_stop(from, velocity, COAST);
+        assert_eq!(to, Point::new(0, -300));
+        let glide = Glide::fling(from, velocity, to, ms(0), COAST, SETTLE);
+        // It slows by e every 300 ms.
+        let (at, speed) = glide.sample(ms(300));
+        assert!(abs(at[1] - -300.0 * (1.0 - 0.3679)) < 1.0, "{at:?}");
+        assert!(abs(speed[1] - -367.9) < 1.0, "{speed:?}");
+        let mut last = 0;
+        let mut rest = None;
+        for t in 0..5000 {
+            let (at, moving) = glide.at(ms(t));
+            assert!(at.y <= last && at.y >= -300, "{t} ms: {at:?}");
+            last = at.y;
+            if !moving {
+                rest = rest.or(Some(t));
+            }
+        }
+        assert!(rest.is_some_and(|t| t < 3000), "{rest:?}");
+        assert!(glide.is_coasting(ms(100)) && !glide.is_coasting(ms(5000)));
+    }
+
+    #[test]
+    fn flung_content_springs_back_from_a_bound_it_reaches() {
+        let glide = Glide::fling(
+            Point::new(0, 0),
+            [0.0, -1000.0],
+            Point::new(0, -100),
+            ms(0),
+            COAST,
+            SETTLE,
+        );
+        // e^(-t / 300 ms) falls to 2/3 when it reaches the bound.
+        let reached = 121;
+        let (at, speed) = glide.sample(ms(reached));
+        assert!(
+            abs(at[1] - -100.0) < 1.0 && abs(speed[1] - -666.7) < 10.0,
+            "{at:?} {speed:?}"
+        );
+        let mut furthest = 0;
+        for t in 0..1000 {
+            furthest = furthest.min(glide.at(ms(t)).0.y);
+        }
+        assert!(furthest < -100 && furthest > -110, "{furthest}");
+        assert_eq!(glide.at(ms(1000)), (Point::new(0, -100), false));
+    }
+
+    #[test]
+    fn content_flung_outward_from_a_bound_springs_back() {
+        let glide = Glide::fling(
+            Point::new(0, 0),
+            [0.0, 400.0],
+            Point::new(0, 0),
+            ms(0),
+            COAST,
+            SETTLE,
+        );
+        let furthest = (0..400).map(|t| glide.at(ms(t)).0.y).max();
+        assert!(furthest.is_some_and(|y| y > 0 && y < 10), "{furthest:?}");
+        assert_eq!(glide.at(ms(600)), (Point::new(0, 0), false));
     }
 
     #[test]
