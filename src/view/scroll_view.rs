@@ -355,6 +355,13 @@ impl<Inner> ScrollView<Inner> {
         render_tree.offset() + render_tree.inner.offset
     }
 
+    /// `touch`, where it is on the content, which lays itself out from zero.
+    fn content_touch<R>(touch: &Touch, render_tree: &ScrollRenderable<R>) -> Touch {
+        let mut touch = touch.clone();
+        touch.location -= Self::content_origin(render_tree).into();
+        touch
+    }
+
     /// Where `frame`, a shape within the content, is on screen, with the
     /// focus margin around it.
     fn focus_frame<R>(&self, frame: &Rectangle, render_tree: &ScrollRenderable<R>) -> Rectangle {
@@ -998,7 +1005,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             && touch.id != touch_id
         {
             return self.inner.handle_touch(
-                touch,
+                &Self::content_touch(touch, render_tree),
                 context,
                 render_tree.inner_mut(),
                 captures,
@@ -1020,11 +1027,8 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                     context.request_redraw();
                     // returning the inner result here would move focus before we're committed to scrolling
                     {
-                        let mut offset_touch = touch.clone();
-                        offset_touch.location -=
-                            (render_tree.offset() + render_tree.inner.offset).into();
                         let _inner_result = self.inner.handle_touch(
-                            &offset_touch,
+                            &Self::content_touch(touch, render_tree),
                             context,
                             render_tree.inner_mut(),
                             captures,
@@ -1054,11 +1058,8 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                     match target {
                         InteractionTarget::Scroll => (TouchResult::Handled, delta),
                         InteractionTarget::Inner => {
-                            let mut offset_touch = touch.clone();
-                            offset_touch.location -=
-                                (render_tree.offset() + render_tree.inner.offset).into();
                             let inner_result = self.inner.handle_touch(
-                                &offset_touch,
+                                &Self::content_touch(touch, render_tree),
                                 context,
                                 render_tree.inner_mut(),
                                 captures,
@@ -1075,7 +1076,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                             if horizontal_intent || vertical_intent {
                                 // cancel inner interaction once we're sure the user intended to scroll
                                 *target = InteractionTarget::Scroll;
-                                let mut cancel_touch = touch.clone();
+                                let mut cancel_touch = Self::content_touch(touch, render_tree);
                                 cancel_touch.phase = Phase::Cancelled;
                                 // returning the inner result here would move focus before we're committed to scrolling
                                 {
@@ -1095,11 +1096,8 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                                     && self.direction == ScrollDirection::Horizontal;
 
                                 // notify inner of result, don't commit
-                                let mut offset_touch = touch.clone();
-                                offset_touch.location -=
-                                    (render_tree.offset() + render_tree.inner.offset).into();
                                 let inner_result = self.inner.handle_touch(
-                                    &offset_touch,
+                                    &Self::content_touch(touch, render_tree),
                                     context,
                                     render_tree.inner_mut(),
                                     captures,
@@ -1139,12 +1137,8 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                         // from where the touch left it.
                         (TouchResult::Handled, delta)
                     } else {
-                        let touch_offset = render_tree.offset() + render_tree.inner.offset;
-                        let mut touch = touch.clone();
-                        touch.location -= touch_offset.into();
-
                         let inner_result = self.inner.handle_touch(
-                            &touch,
+                            &Self::content_touch(touch, render_tree),
                             context,
                             render_tree.inner_mut(),
                             captures,
@@ -1155,7 +1149,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                 }
                 ScrollInteraction::Idle => (
                     self.inner.handle_touch(
-                        touch,
+                        &Self::content_touch(touch, render_tree),
                         context,
                         render_tree.inner_mut(),
                         captures,
@@ -1168,7 +1162,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                 state.interaction = ScrollInteraction::Idle;
                 context.request_view_rebuild();
                 let inner_result = self.inner.handle_touch(
-                    touch,
+                    &Self::content_touch(touch, render_tree),
                     context,
                     render_tree.inner_mut(),
                     captures,
@@ -1178,7 +1172,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             }
             Phase::Hovering(_) => (
                 self.inner.handle_touch(
-                    touch,
+                    &Self::content_touch(touch, render_tree),
                     context,
                     render_tree.inner_mut(),
                     captures,
