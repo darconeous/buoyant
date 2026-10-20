@@ -1,11 +1,11 @@
-use embedded_touch::{Phase, Touch};
+use embedded_touch::Touch;
 
 use crate::{
     environment::LayoutEnvironment,
     focus::{Seek, SeekResult},
     font::{CustomSize, Font, FontMetrics},
     layout::ResolvedLayout,
-    primitives::{Point, ProposedDimension, ProposedDimensions, Size, geometry::Rectangle},
+    primitives::{Point, ProposedDimension, ProposedDimensions, Size},
     render::{self},
     transition::Opacity,
     view::{ViewLayout, ViewMarker},
@@ -485,18 +485,14 @@ where
 
     fn handle_touch(
         &self,
-        touch: &Touch,
+        _touch: &Touch,
         _context: &crate::event::EventContext,
-        render_tree: &mut Self::Renderables,
+        _render_tree: &mut Self::Renderables,
         _captures: &mut Captures,
         _state: &mut Self::State,
     ) -> TouchResult<Self::FocusTree> {
-        if touch.phase == Phase::Started {
-            let rect = Rectangle::new(render_tree.origin, render_tree.size.into());
-            if rect.contains(&touch.location.into()) {
-                return TouchResult::Handled;
-            }
-        }
+        // Content to look at, not to touch: a touch on it belongs to the
+        // views around it, such as a scroll view to drag or a button.
         TouchResult::Deferred
     }
 }
