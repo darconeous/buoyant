@@ -285,3 +285,121 @@ fn a_pointer_touches_only_what_is_under_it() {
     app.send_touch(&click(Phase::Ended));
     assert_eq!(*app.state(), Taps([0, 0, 0]));
 }
+
+/// Where focus is, as the bounds of the focused element.
+macro_rules! focus_bounds {
+    ($app:expr) => {
+        $app.focus_shape()
+            .bounding_box()
+            .map(|b| (b.origin, b.size))
+    };
+}
+
+#[test]
+fn a_long_press_near_a_small_button_focuses_it() {
+    let mut app = app(pair);
+    assert!(app.focus_at(Point::new(37, 45)));
+    assert_eq!(
+        focus_bounds!(app),
+        Some((Point::new(40, 40), Size::new(10, 10)))
+    );
+    // Nearer the second, though the first is in front.
+    assert!(app.focus_at(Point::new(54, 45)));
+    assert_eq!(
+        focus_bounds!(app),
+        Some((Point::new(56, 40), Size::new(10, 10)))
+    );
+    // Beyond the grown areas there is nothing to focus.
+    assert!(!app.focus_at(Point::new(34, 45)));
+    assert_eq!(*app.state(), Taps([0, 0, 0]));
+}
+
+#[test]
+fn a_long_press_directly_on_a_button_focuses_it_over_one_near() {
+    let mut app = app(neighbors);
+    assert!(app.focus_at(Point::new(52, 45)));
+    assert_eq!(
+        focus_bounds!(app),
+        Some((Point::new(50, 40), Size::new(20, 20)))
+    );
+}
+
+#[test]
+fn a_long_press_held_near_a_small_button_focuses_it() {
+    let mut app = app(pair);
+    app.touch_down(Point::new(37, 45));
+    assert!(app.focus_at(Point::new(37, 45)));
+    app.cancel_touch();
+    app.touch_up(Point::new(37, 45));
+    assert_eq!(
+        focus_bounds!(app),
+        Some((Point::new(40, 40), Size::new(10, 10)))
+    );
+    assert_eq!(*app.state(), Taps([0, 0, 0]));
+}
+
+#[test]
+fn a_long_press_with_a_pointer_focuses_only_what_is_under_it() {
+    let mut app = app(pair);
+    app.send_touch(&Touch::new(
+        0,
+        Point::new(37, 45).into(),
+        Phase::Started,
+        Tool::Pointer {
+            button: PointerButton::Primary,
+        },
+    ));
+    assert!(!app.focus_at(Point::new(37, 45)));
+}
+
+#[test]
+fn a_long_press_in_a_scroll_view_outranks_a_small_button_near_it_outside() {
+    let mut app = app(header);
+    assert!(!app.focus_at(Point::new(5, 13)));
+    assert!(app.focus_at(Point::new(12, 5)));
+    assert_eq!(
+        focus_bounds!(app),
+        Some((Point::new(0, 0), Size::new(10, 10)))
+    );
+}
+
+#[test]
+fn a_long_press_near_a_small_button_in_a_scrolled_scroll_view_focuses_it() {
+    let mut app = app(list);
+    app.drag(Point::new(50, 95), Point::new(50, 45));
+    app.finalize_view();
+    // Scrolled by 50, the second button shows at (45, 80).
+    assert!(app.focus_at(Point::new(56, 78)));
+    assert_eq!(
+        focus_bounds!(app),
+        Some((Point::new(45, 80), Size::new(10, 10)))
+    );
+}
+
+#[test]
+fn a_long_press_near_a_small_button_in_an_open_popover_focuses_it() {
+    let mut app = App::new(
+        Menu {
+            open: Some(()),
+            ..Menu::default()
+        },
+        Size::new(100, 100),
+        menu,
+    )
+    .with_roles(Role::Button)
+    .with_min_touch_target(MIN);
+    assert!(app.focus_at(Point::new(43, 50)));
+    assert_eq!(
+        focus_bounds!(app),
+        Some((Point::new(45, 45), Size::new(10, 10)))
+    );
+    // Near the button behind, nothing outside the overlay is focused.
+    assert!(!app.focus_at(Point::new(8, 15)));
+}
+
+#[test]
+fn with_no_minimum_a_long_press_focuses_only_what_is_under_it() {
+    let mut app = App::new(Taps::default(), Size::new(100, 100), pair).with_roles(Role::Button);
+    assert!(!app.focus_at(Point::new(37, 45)));
+    assert!(app.focus_at(Point::new(41, 45)));
+}

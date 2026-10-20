@@ -283,8 +283,9 @@ pub(crate) struct TouchTargets {
     /// A target was touched in its own area.
     direct: Cell<bool>,
     /// The nearest target whose grown area holds the touch: its squared
-    /// distance from the touch, and its place in the order targets are asked.
-    nearest: Cell<Option<(u64, u16)>>,
+    /// distance from the touch, its place in the order targets are asked,
+    /// and the way from the touch to the nearest point in it.
+    nearest: Cell<Option<(u64, u16, Point)>>,
     /// The first view hiding what is behind it that the touch landed on.
     cover: Cell<Option<Rectangle>>,
 }
@@ -345,9 +346,13 @@ impl TouchTargets {
             && self
                 .nearest
                 .get()
-                .is_none_or(|(nearest, _)| distance < nearest)
+                .is_none_or(|(nearest, ..)| distance < nearest)
         {
-            self.nearest.set(Some((distance, index)));
+            let inside = Point::new(
+                point.x.clamp(bounds.origin.x, bounds.x_end() - 1),
+                point.y.clamp(bounds.origin.y, bounds.y_end() - 1),
+            );
+            self.nearest.set(Some((distance, index, inside - point)));
         }
     }
 }
@@ -409,7 +414,7 @@ impl EventContext {
             HitPass::Near => targets
                 .nearest
                 .get()
-                .is_some_and(|(_, nearest)| nearest == index),
+                .is_some_and(|(_, nearest, _)| nearest == index),
         }
     }
 
@@ -467,6 +472,17 @@ impl EventContext {
             targets.pass.set(HitPass::Probe);
         }
         probe
+    }
+
+    /// After the probe, the way from the touch to the nearest point in the
+    /// target it goes to, when it landed on no target but near one.
+    pub(crate) fn near_touch_offset(&self) -> Option<Point> {
+        let targets = &self.touch_targets;
+        targets
+            .nearest
+            .get()
+            .filter(|_| !targets.direct.get())
+            .map(|(.., offset)| offset)
     }
 
     /// Ends the probe: the touch is then handled by the nearest target alone

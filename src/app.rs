@@ -342,9 +342,15 @@ where
     /// Moves focus to the element under `point`, as a long press does, and
     /// settles focus.
     ///
+    /// With a [minimum touch target](Self::with_min_touch_target), the
+    /// element is found as a touch starting at `point` finds it: one near
+    /// enough to a small target, and on no other, focuses that target. The
+    /// touch in progress, if there is one, is taken to be the one held.
+    ///
     /// Returns whether an element that can be focused is there. Nothing
     /// changes if there is none, or an open modal keeps focus from it.
     pub fn focus_at(&mut self, point: Point) -> bool {
+        let point = self.touched_at(point);
         if !self.seek(SeekTarget::At(point)).is_found() {
             return false;
         }
@@ -352,6 +358,39 @@ where
         self.requires_redraw = true;
         self.finalize_view();
         true
+    }
+
+    /// Where a touch starting at `point` lands: in the target it would go
+    /// to, when it is only near that target, and otherwise at `point`.
+    fn touched_at(&mut self, point: Point) -> Point {
+        let (id, tool) = self
+            .touch
+            .as_ref()
+            .map_or((0, Tool::Finger), |touch| (touch.id, touch.tool));
+        let touch = Touch::new(id, point.into(), Phase::Started, tool);
+        let context = self.touch_context(&touch);
+        if !context.begin_touch_probe() {
+            return point;
+        }
+        _ = self.view.handle_touch(
+            &touch,
+            &context,
+            self.trees.target_mut(),
+            &mut self.state,
+            &mut self.view_state,
+        );
+        point + context.near_touch_offset().unwrap_or_default()
+    }
+
+    /// The context a touch is handled in.
+    fn touch_context(&self, touch: &Touch) -> EventContext {
+        let min_touch_target = match touch.tool {
+            Tool::Pointer { .. } => Size::zero(),
+            Tool::Finger | Tool::Stylus { .. } => self.min_touch_target,
+        };
+        EventContext::new(self.elapsed)
+            .with_roles(self.roles)
+            .with_min_touch_target(min_touch_target)
     }
 
     /// Cancels the touch in progress, so that what it would do when it ends,
@@ -763,13 +802,7 @@ where
             Phase::Ended | Phase::Cancelled if in_progress == Some(touch.id) => self.touch = None,
             _ => {}
         }
-        let min_touch_target = match touch.tool {
-            Tool::Pointer { .. } => Size::zero(),
-            Tool::Finger | Tool::Stylus { .. } => self.min_touch_target,
-        };
-        let context = EventContext::new(self.elapsed)
-            .with_roles(self.roles)
-            .with_min_touch_target(min_touch_target);
+        let context = self.touch_context(touch);
 
         // A starting touch is first followed to where it lands, so that one
         // landing on no target but near one goes to that target.

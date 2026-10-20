@@ -618,11 +618,11 @@ where
         {
             let inside = subtree.content_shape().contains(touch.location.into());
             // A starting touch is a new one, even with the id of one whose
-            // end was lost.
-            if touch.phase == Phase::Started {
+            // end was lost. A probe changes nothing, and looks in the overlay.
+            if touch.phase == Phase::Started && !context.is_touch_probe() {
                 state.outside_touch = None;
             }
-            if state.outside_touch == Some(touch.id) {
+            if state.outside_touch == Some(touch.id) && !context.is_touch_probe() {
                 return match touch.phase {
                     Phase::Ended => {
                         state.outside_touch = None;
