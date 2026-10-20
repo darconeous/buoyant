@@ -5,10 +5,12 @@ use buoyant::{
     app::{App, Harness as _},
     event::Event,
     focus::{self, FocusKey, FocusState, Role},
+    font::CharacterBufferFont,
     match_view,
     primitives::{Point, Size},
     render::ContentShape,
     view::{
+        EditBuffer, Lazy,
         prelude::*,
         rotary::{RotaryEvent, RotaryState},
         scroll_view::ScrollBarVisibility,
@@ -26,6 +28,7 @@ struct State {
     open: bool,
     rows: &'static [u32],
     second_screen: bool,
+    draft: EditBuffer<heapless::String<16>>,
 }
 
 fn bind(state: &mut State) -> &mut FocusState {
@@ -489,4 +492,45 @@ fn a_met_request_does_not_pass_through_the_screen_first() {
     app.tap(Point::new(25, 90));
     app.finalize_view();
     assert_eq!(app.focused_key(), Some(key(4)));
+}
+
+static MESSAGES: [u32; 3] = [10, 11, 12];
+static FONT: CharacterBufferFont = CharacterBufferFont;
+const COMPOSER: u32 = 30;
+
+/// Messages in a scroll view, each a button drawn lazily, over a composer,
+/// bounded and under a popover as a conversation is.
+fn conversation(state: &State) -> impl View<(), State> + use<> {
+    VStack::new((
+        ScrollView::new(
+            ForEach::<3>::new_vertical(&MESSAGES, |&row| {
+                Button::new(
+                    move |s: &mut State| s.turns[row as usize] += 1,
+                    move |_| Lazy::new(row, |_| Rectangle.frame_sized(80, 20)),
+                )
+            })
+            .keyed(|&row| key(row)),
+        )
+        .with_bar_visibility(ScrollBarVisibility::Never),
+        TextField::new(&state.draft, &FONT, |s: &mut State| Some(&mut s.draft))
+            .focus_key(key(COMPOSER)),
+    ))
+    .bound_focus(focus::BoundaryBehavior::Stop)
+    .popover(None::<&()>, |()| Rectangle.frame_sized(10, 10))
+}
+
+#[test]
+fn a_tap_on_a_button_in_a_keyed_list_focuses_it() {
+    let mut app = App::new(State::default(), Size::new(100, 200), conversation)
+        .with_roles(Role::Button | Role::TextEntry)
+        .with_focus_binding(bind);
+    app.focus(key(COMPOSER));
+    app.finalize_view();
+    assert_eq!(app.focused_key(), Some(key(COMPOSER)));
+
+    app.tap(Point::new(50, 30));
+    app.finalize_view();
+    assert_eq!(app.state().turns[11], 1);
+    assert_eq!(app.focused_key(), Some(key(11)));
+    assert_eq!(app.state().focus.current(), Some(key(11)));
 }
