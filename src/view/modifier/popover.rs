@@ -12,7 +12,7 @@ use crate::{
     view::{ViewLayout, ViewMarker},
 };
 
-use embedded_touch::Touch;
+use embedded_touch::{Phase, Touch};
 
 /// The decision to either retain or dismiss the active popover on blur
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +23,8 @@ pub enum Dismissal {
     Retain,
 }
 
-/// A callback invoked when a popover's overlay receives a `Blur` event.
+/// A callback invoked when a popover's overlay receives a `Blur` event, or a
+/// tap outside it.
 ///
 /// The handler may mutate captured state (e.g. clearing the value that drives
 /// the overlay's visibility) and then returns a [`Dismissal`] to indicate
@@ -71,12 +72,18 @@ pub struct FocusTree<T, U> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PopoverState<T, U> {
+pub struct PopoverState<T, U, F> {
     pub inner_state: T,
     pub overlay_state: Option<U>,
     /// The overlay was dismissed and focus returned to the inner view, but
     /// the view has not been rebuilt without it yet.
     pub dismissed: bool,
+    /// Where focus is in the inner view while the overlay holds it, so a
+    /// touch that moves focus within the overlay, or dismisses it, keeps it.
+    opener: Option<F>,
+    /// A touch that started outside the open overlay, which dismisses the
+    /// overlay if it ends outside too.
+    outside_touch: Option<u8>,
 }
 
 impl<T: DefaultFocus, U: DefaultFocus> DefaultFocus for FocusTree<T, U> {
@@ -129,9 +136,9 @@ where
         self
     }
 
-    /// Installs a callback invoked when the overlay receives a `Blur` event.
-    /// This should be used to update state backing the popover and decide whether
-    /// the overlay should be dismissed by the blur.
+    /// Installs a callback invoked when the overlay receives a `Blur` event,
+    /// or is tapped outside. This should be used to update state backing the
+    /// popover and decide whether the overlay should be dismissed.
     ///
     /// Returning [`Dismissal::Dismiss`] drops the overlay's focus subtree,
     /// returns focus to where it was in the inner view, and requests a view
@@ -169,7 +176,7 @@ where
         context: &EventContext,
         render_tree: &mut <Self as ViewMarker>::Renderables,
         captures: &mut Captures,
-        state: &mut PopoverState<Inner::State, Overlay::State>,
+        state: &mut PopoverState<Inner::State, Overlay::State, Inner::FocusTree>,
         focus: &mut FocusTree<Inner::FocusTree, Overlay::FocusTree>,
     ) -> EventResult
     where
@@ -178,6 +185,7 @@ where
         Action: OnBlur<Captures>,
         Inner::Renderables: IntrinsicShape,
     {
+        state.opener = Some(focus.inner.clone());
         let subfocus = focus
             .overlay
             .get_or_insert_with(DefaultFocus::default_first);
@@ -282,6 +290,34 @@ where
             }
         }
     }
+
+    /// A tap outside the open overlay, which dismisses it as a blur does.
+    fn tap_outside<Captures: ?Sized>(
+        &self,
+        context: &EventContext,
+        captures: &mut Captures,
+        state: &mut PopoverState<Inner::State, Overlay::State, Inner::FocusTree>,
+    ) -> TouchResult<FocusTree<Inner::FocusTree, Overlay::FocusTree>>
+    where
+        Inner: ViewLayout<Captures>,
+        Overlay: ViewLayout<Captures>,
+        Action: OnBlur<Captures>,
+    {
+        match self.on_blur.on_blur(captures) {
+            Dismissal::Dismiss => {
+                state.dismissed = true;
+                context.request_view_rebuild();
+                TouchResult::Focused(FocusTree {
+                    inner: state
+                        .opener
+                        .take()
+                        .unwrap_or_else(DefaultFocus::default_first),
+                    overlay: None,
+                })
+            }
+            Dismissal::Retain => TouchResult::Handled,
+        }
+    }
 }
 
 impl<Inner: ViewMarker, Overlay: ViewMarker, Action> ViewMarker
@@ -302,8 +338,9 @@ where
     Overlay: ViewLayout<Captures>,
     Action: OnBlur<Captures>,
     Inner::Renderables: IntrinsicShape,
+    Overlay::Renderables: IntrinsicShape,
 {
-    type State = PopoverState<Inner::State, Overlay::State>;
+    type State = PopoverState<Inner::State, Overlay::State, Inner::FocusTree>;
     type Sublayout = ResolvedLayout<Inner::Sublayout>;
     type FocusTree = FocusTree<Inner::FocusTree, Overlay::FocusTree>;
 
@@ -324,6 +361,8 @@ where
             inner_state: self.inner.build_state(captures),
             overlay_state: self.overlay.as_ref().map(|o| o.build_state(captures)),
             dismissed: false,
+            opener: None,
+            outside_touch: None,
         }
     }
 
@@ -387,6 +426,8 @@ where
             )
         } else {
             state.overlay_state = None;
+            state.opener = None;
+            state.outside_touch = None;
             TransitionOption::None
         };
         (
@@ -571,26 +612,51 @@ where
         captures: &mut Captures,
         state: &mut Self::State,
     ) -> TouchResult<Self::FocusTree> {
-        // FIXME: touch routing for popover is approximate; overlay focus state is not committed
-        if let Some(overlay_view) = &self.overlay
+        // An open overlay takes every touch: nothing behind it is touched.
+        if let Some(overlay_view) = self.overlay.as_ref().filter(|_| !state.dismissed)
             && let TransitionOption::Some { subtree, .. } = &mut render_tree.1.subtree
         {
+            let inside = subtree.content_shape().contains(touch.location.into());
+            if state.outside_touch == Some(touch.id) {
+                return match touch.phase {
+                    Phase::Ended => {
+                        state.outside_touch = None;
+                        if inside {
+                            TouchResult::Handled
+                        } else {
+                            self.tap_outside(context, captures, state)
+                        }
+                    }
+                    Phase::Cancelled => {
+                        state.outside_touch = None;
+                        TouchResult::Handled
+                    }
+                    Phase::Started => {
+                        state.outside_touch = (!inside).then_some(touch.id);
+                        TouchResult::Handled
+                    }
+                    Phase::Moved | Phase::Hovering(_) => TouchResult::Handled,
+                };
+            }
             let overlay_state = state
                 .overlay_state
                 .get_or_insert_with(|| overlay_view.build_state(captures));
             return match overlay_view.handle_touch(touch, context, subtree, captures, overlay_state)
             {
-                TouchResult::Focused(f) => {
-                    // FIXME: This clears the inner focus, could pass Option<&Self::FocusTree> to handle_touch?
-                    TouchResult::Focused(FocusTree {
-                        inner: DefaultFocus::default_first(),
-                        overlay: Some(f),
-                    })
-                }
+                TouchResult::Focused(f) => TouchResult::Focused(FocusTree {
+                    inner: state
+                        .opener
+                        .clone()
+                        .unwrap_or_else(DefaultFocus::default_first),
+                    overlay: Some(f),
+                }),
                 TouchResult::Handled => TouchResult::Handled,
+                TouchResult::Deferred if touch.phase == Phase::Started && !inside => {
+                    state.outside_touch = Some(touch.id);
+                    TouchResult::Handled
+                }
                 TouchResult::Deferred => TouchResult::Deferred,
             };
-            // TODO: If the tap was outside the popover, dismiss it?
         }
         match self.inner.handle_touch(
             touch,

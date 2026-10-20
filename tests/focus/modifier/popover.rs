@@ -491,3 +491,60 @@ fn a_dismissed_overlay_awaiting_rebuild_does_not_take_focus_back() {
     assert_eq!(harness.focus_forward().key(), Some(OPENER));
     assert_eq!(harness.state().exits, 0);
 }
+
+/// A list over the whole of a screen of rows, dismissed by a blur or a tap
+/// outside it.
+fn dismissible_list(state: &ListState) -> impl View<(), ListState> + use<> {
+    VStack::new((
+        row().focus_key(BEFORE),
+        row().focus_key(OPENER),
+        row().focus_key(AFTER),
+    ))
+    .frame_sized(100, 140)
+    .popover(state.open.as_ref(), |&rows| {
+        ForEach::<4>::new_vertical(&SLOTS[..rows], |_| row()).keyed(|&slot| FocusKey(slot))
+    })
+    .on_blur(|s: &mut ListState| {
+        s.open = None;
+        Dismissal::Dismiss
+    })
+}
+
+#[test]
+fn a_tap_outside_the_overlay_dismisses_it_and_returns_focus_to_the_opener() {
+    let mut harness = App::new(ListState::default(), Size::new(100, 140), dismissible_list)
+        .with_roles(Role::Button);
+    assert_eq!(harness.focus_forward().key(), Some(BEFORE));
+    assert_eq!(harness.next().key(), Some(OPENER));
+    harness.state_mut().open = Some(2);
+    harness.force_rebuild();
+    assert_eq!(harness.focused_key(), Some(FocusKey(10)));
+
+    // The rows are at (40, 50) to (60, 90). A tap on the second focuses it.
+    harness.tap(Point::new(50, 80));
+    assert_eq!(harness.focused_key(), Some(FocusKey(11)));
+
+    // A touch that starts outside but ends on the overlay leaves it open.
+    harness.drag(Point::new(5, 25), Point::new(50, 60));
+    assert_eq!(harness.state().open, Some(2));
+
+    // A tap beside the rows dismisses it, and focus goes back to the opener,
+    // not to the first row behind.
+    harness.tap(Point::new(5, 25));
+    assert_eq!(harness.state().open, None);
+    assert_eq!(harness.focused_key(), Some(OPENER));
+    harness.finalize_view();
+    assert_eq!(harness.focused_key(), Some(OPENER));
+}
+
+#[test]
+fn a_tap_outside_an_overlay_that_retains_reaches_nothing_behind_it() {
+    let state = State::default().with_popover();
+    let mut harness =
+        App::new(state, Size::new(100, 100), popover_touch_view).with_roles(Role::Button);
+    harness.tap(Point::new(5, 5));
+    assert!(harness.state().popover_visible.is_some());
+    assert!(!harness.state().main_tapped);
+    harness.tap(Point::new(50, 50));
+    assert!(harness.state().popover_a_tapped);
+}
