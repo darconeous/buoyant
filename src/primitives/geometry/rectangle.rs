@@ -5,7 +5,7 @@ use crate::primitives::{
 };
 
 use super::{PathEl, Shape, ShapePathIter};
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rectangle {
     pub origin: Point,
     pub size: Size,
@@ -216,11 +216,11 @@ impl Shape for Rectangle {
     }
 
     fn bounding_box(&self) -> Rectangle {
-        self.clone()
+        *self
     }
 
     fn as_rect(&self) -> Option<Rectangle> {
-        Some(self.clone())
+        Some(*self)
     }
 }
 #[cfg(feature = "embedded-graphics")]

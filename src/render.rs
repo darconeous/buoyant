@@ -149,7 +149,7 @@ impl ContentShape {
     pub fn bounding_box(&self) -> Option<geometry::Rectangle> {
         match self {
             Self::Empty => None,
-            Self::Rectangle(rect) => Some(rect.clone()),
+            Self::Rectangle(rect) => Some(*rect),
             Self::RoundedRectangle(rrect) => Some(rrect.bounding_box()),
             Self::Circle(circle) => Some(circle.bounding_box()),
         }

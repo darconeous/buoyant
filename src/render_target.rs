@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn layer_config_new_clip() {
         let clip_rect = Rectangle::new(Point::new(10, 15), Size::new(50, 75));
-        let layer = LayerConfig::<u8>::new_clip(clip_rect.clone());
+        let layer = LayerConfig::<u8>::new_clip(clip_rect);
 
         assert_eq!(layer.alpha, 255);
         assert_eq!(layer.transform, LinearTransform::default());

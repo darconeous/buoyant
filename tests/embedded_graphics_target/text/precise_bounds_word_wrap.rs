@@ -156,13 +156,13 @@ fn exhaustively_check_precise_bounds(font: &impl FontRender<Rgb888>) {
                     rendered_text_bounds(text, font, size, true);
                 }
                 assert!(
-                    size.width >= actual_bounds.clone().map_or(0, |r| r.size.width),
+                    size.width >= actual_bounds.map_or(0, |r| r.size.width),
                     "Expected actual width of at most {} but got {:?}",
                     size.width,
                     actual_bounds
                 );
                 assert!(
-                    size.height >= actual_bounds.clone().map_or(0, |r| r.size.height),
+                    size.height >= actual_bounds.map_or(0, |r| r.size.height),
                     "Expected actual height of at most {} but got {:?}",
                     size.height,
                     actual_bounds

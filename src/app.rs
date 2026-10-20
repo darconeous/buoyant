@@ -11,15 +11,15 @@ use crate::{
     environment::DefaultEnvironment,
     event::{Event, EventContext, EventResult, TouchResult},
     focus::{
-        DefaultFocus, FocusAction, FocusDirection, FocusGroup, FocusKey, FocusState, Role, RoleSet,
-        Seek, SeekResult, SeekTarget,
+        DefaultFocus, Direction, FocusAction, FocusDirection, FocusGroup, FocusKey, FocusState,
+        Role, RoleSet, Seek, SeekResult, SeekTarget,
     },
-    primitives::{Point, Size, transform::LinearTransform},
+    primitives::{Point, Size, geometry::Rectangle, transform::LinearTransform},
     render::{AnimatedJoin, AnimationDomain, ContentShape, Render},
     render_target::{RenderTarget, SolidBrush, Stroke},
     view::{View, ViewLayout},
 };
-use embedded_touch::Touch;
+use embedded_touch::{Phase, Touch};
 
 mod harness;
 pub use harness::Harness;
@@ -65,6 +65,10 @@ where
     focus_request: Option<FocusKey>,
     /// A redirected key is being delivered.
     redirecting: bool,
+    /// The touch in progress, from when it started until it ends.
+    touch: Option<Touch>,
+    /// A touch cancelled while in progress, until it ends.
+    cancelled: Option<u8>,
     roles: RoleSet,
     size: Size,
     elapsed: Duration,
@@ -143,6 +147,8 @@ where
             focus_binding: None,
             focus_request: None,
             redirecting: false,
+            touch: None,
+            cancelled: None,
             size,
             elapsed: Duration::default(),
             requires_redraw: true,
@@ -178,6 +184,8 @@ where
                 focus_binding: _,
                 focus_request: _,
                 redirecting: _,
+                touch: _,
+                cancelled: _,
                 roles: _,
                 size: _,
                 elapsed: _,
@@ -213,6 +221,8 @@ where
             (&raw mut (*app).focus_binding).write(None);
             (&raw mut (*app).focus_request).write(None);
             (&raw mut (*app).redirecting).write(false);
+            (&raw mut (*app).touch).write(None);
+            (&raw mut (*app).cancelled).write(None);
             (&raw mut (*app).roles).write(Role::Button | Role::Container);
             (&raw mut (*app).size).write(size);
             (&raw mut (*app).elapsed).write(Duration::default());
@@ -275,6 +285,59 @@ where
             None => self.focus_request = Some(key),
         }
         self.finalize_view();
+    }
+
+    /// Moves focus on screen toward `dir`, from the focused element.
+    ///
+    /// Stacks moving along their axis move as [`next`](Harness::next) and
+    /// [`previous`](Harness::previous) do, scrolling where those would; across
+    /// their axis they leave the move to whatever holds focus in them, and
+    /// focus entering a stack across its axis lands on the child nearest the
+    /// element it left. See [`FocusAction::Toward`].
+    ///
+    /// The move is made in the group that holds focus. One that leads
+    /// nowhere leaves focus where it was: directional moves never wrap.
+    pub fn move_toward(&mut self, dir: Direction) -> EventResult {
+        let from = self
+            .focus_shape
+            .bounding_box()
+            .unwrap_or_else(|| Rectangle::new(Point::zero(), Size::zero()));
+        let result = self.send(FocusAction::Toward { dir, from }.into_event(self.focus_group));
+        if result.is_handled() {
+            return result;
+        }
+        // Back onto the element at the edge the move reached.
+        match dir.focus_direction() {
+            FocusDirection::Forward => self.focus_backward_group(self.focus_group),
+            FocusDirection::Backward => self.focus_forward_group(self.focus_group),
+        }
+    }
+
+    /// Moves focus to the element under `point`, as a long press does, and
+    /// settles focus.
+    ///
+    /// Returns whether an element that can be focused is there. Nothing
+    /// changes if there is none, or an open modal keeps focus from it.
+    pub fn focus_at(&mut self, point: Point) -> bool {
+        if !self.seek(SeekTarget::At(point)).is_found() {
+            return false;
+        }
+        self.move_focus(SeekTarget::At(point));
+        self.requires_redraw = true;
+        self.finalize_view();
+        true
+    }
+
+    /// Cancels the touch in progress, so that what it would do when it ends,
+    /// such as a button's action, is not done.
+    ///
+    /// The rest of the touch, until it ends, goes unanswered.
+    pub fn cancel_touch(&mut self) {
+        if let Some(mut touch) = self.touch.take() {
+            touch.phase = Phase::Cancelled;
+            self.send_touch(&touch);
+            self.cancelled = Some(touch.id);
+        }
     }
 
     /// Returns a reference to the application state.
@@ -657,6 +720,23 @@ where
     }
 
     fn send_touch(&mut self, touch: &Touch) {
+        // What is left of a cancelled touch goes unanswered.
+        if self.cancelled == Some(touch.id) && touch.phase != Phase::Started {
+            if matches!(touch.phase, Phase::Ended | Phase::Cancelled) {
+                self.cancelled = None;
+            }
+            return;
+        }
+        let in_progress = self.touch.as_ref().map(|current| current.id);
+        match touch.phase {
+            Phase::Started if in_progress.is_none() => {
+                self.cancelled = None;
+                self.touch = Some(touch.clone());
+            }
+            Phase::Moved if in_progress == Some(touch.id) => self.touch = Some(touch.clone()),
+            Phase::Ended | Phase::Cancelled if in_progress == Some(touch.id) => self.touch = None,
+            _ => {}
+        }
         let context = EventContext::new(self.elapsed).with_roles(self.roles);
         let target_tree = self.trees.target_mut();
 

@@ -3,7 +3,7 @@ use embedded_touch::Touch;
 use crate::{
     environment::LayoutEnvironment,
     event::{EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusAction, FocusDirection, Seek, SeekResult},
+    focus::{DefaultFocus, FocusDirection, Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimension, ProposedDimensions},
     render,
@@ -340,12 +340,11 @@ macro_rules! impl_view_that_fits {
                                 return EventResult::Deferred;
                             };
                             let inner_focus = match event {
-                                Event::Focus {
-                                    action:
-                                        FocusAction::Focus(FocusDirection::Backward)
-                                        | FocusAction::Previous,
-                                    ..
-                                } => focus.$or_init(DefaultFocus::default_last()),
+                                Event::Focus { action, .. }
+                                    if action.direction() == Some(FocusDirection::Backward) =>
+                                {
+                                    focus.$or_init(DefaultFocus::default_last())
+                                }
                                 _ => focus.$or_init(DefaultFocus::default_first()),
                             };
                             self.choices

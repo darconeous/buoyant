@@ -216,9 +216,18 @@ where
                         context.request_view_rebuild();
                         EventResult::handled_focused(focused_shape)
                     }
-                    FocusAction::Focus(_) => {
+                    FocusAction::Focus(_) | FocusAction::Enter { .. } => {
                         state.0 = RotaryState::Captive;
                         EventResult::handled_focused(focused_shape)
+                    }
+                    // A directional move is not the rotary's to take: it
+                    // leaves, as a blur would release it.
+                    FocusAction::Toward { .. } => {
+                        (self.action)(captures, RotaryEvent::Exit);
+                        focus.0 = false;
+                        state.0 = RotaryState::UnFocused;
+                        context.request_view_rebuild();
+                        EventResult::Deferred
                     }
                     FocusAction::Teardown => {
                         (self.action)(captures, RotaryEvent::Exit);
@@ -246,13 +255,14 @@ where
                 match focus_event {
                     FocusAction::Next
                     | FocusAction::Previous
+                    | FocusAction::Toward { .. }
                     | FocusAction::Blur
                     | FocusAction::Teardown => {
                         state.0 = RotaryState::UnFocused;
                         context.request_view_rebuild();
                         EventResult::Deferred
                     }
-                    FocusAction::Focus(_) => {
+                    FocusAction::Focus(_) | FocusAction::Enter { .. } => {
                         if state.0 != RotaryState::Focused {
                             state.0 = RotaryState::Focused;
                             context.request_view_rebuild();
@@ -275,12 +285,16 @@ where
     fn seek(
         &self,
         seek: &Seek,
-        _render_tree: &Self::Renderables,
+        render_tree: &Self::Renderables,
         _state: &Self::State,
         _focus: Option<&Self::FocusTree>,
     ) -> SeekResult<Self::FocusTree> {
+        if !seek.roles.contains(Role::Button) {
+            return SeekResult::Absent;
+        }
         match seek.target {
-            SeekTarget::Any if seek.roles.contains(Role::Button) => {
+            SeekTarget::Any => SeekResult::found(DefaultFocus::default_first()),
+            SeekTarget::At(point) if render_tree.content_shape().contains(point) => {
                 SeekResult::found(DefaultFocus::default_first())
             }
             _ => SeekResult::Absent,

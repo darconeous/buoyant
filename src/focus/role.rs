@@ -14,6 +14,12 @@ pub enum Role {
     /// A container which holds other focusable elements, often wrapping focus
     /// within the container.
     Container,
+    /// An element only a touch reaches, such as a button that duplicates
+    /// what focus navigation already offers.
+    ///
+    /// Focus never lands on it: navigation and seeks pass over it whatever
+    /// roles they allow, and touching it does not move focus.
+    Pointer,
 }
 
 impl Role {
@@ -26,6 +32,7 @@ impl Role {
             Self::Text => RoleSet(1 << 1),
             Self::TextEntry => RoleSet(1 << 2),
             Self::Container => RoleSet(1 << 3),
+            Self::Pointer => RoleSet(1 << 4),
         }
     }
 }

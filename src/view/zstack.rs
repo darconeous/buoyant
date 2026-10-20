@@ -3,7 +3,7 @@ use embedded_touch::Touch;
 use crate::{
     environment::LayoutEnvironment,
     event::{EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, Seek, SeekResult},
+    focus::{DefaultFocus, Seek, SeekResult, SeekTarget},
     layout::{Alignment, HorizontalAlignment, ResolvedLayout, VerticalAlignment},
     primitives::{Point, ProposedDimension, ProposedDimensions},
     view::{ViewLayout, ViewMarker},
@@ -230,13 +230,15 @@ macro_rules! impl_view_for_zstack {
                             return result;
                         }
 
-                        // Child is exhausted, try to move based on action
-                        match focus_event {
-                            FocusAction::Blur | FocusAction::Teardown => {
+                        // Child is exhausted, try to move based on action. The
+                        // layers have no axis, so a directional move is the
+                        // focused layer's alone.
+                        match focus_event.stack_step(None) {
+                            None => {
                                 debug_assert!(!matches!(focus_event, FocusAction::Teardown), "Teardown events should not loop");
                                 return EventResult::Deferred;
                             }
-                            FocusAction::Focus(FocusDirection::Forward) | FocusAction::Select | FocusAction::Next => {
+                            Some(FocusDirection::Forward) => {
                                 // Advance to next child
                                 current += 1;
                                 match current {
@@ -247,10 +249,10 @@ macro_rules! impl_view_for_zstack {
                                     )+
                                     _ => return EventResult::Deferred,
                                 }
-                                // When entering a new child, use Focus action (forward)
-                                current_event = FocusAction::Focus(FocusDirection::Forward);
+                                // When entering a new child, acquire focus forward
+                                current_event = focus_event.entering(FocusDirection::Forward);
                             }
-                            FocusAction::Focus(FocusDirection::Backward) | FocusAction::Previous => {
+                            Some(FocusDirection::Backward) => {
                                 // Go to previous child
                                 if current == 0 {
                                     return EventResult::Deferred;
@@ -264,8 +266,8 @@ macro_rules! impl_view_for_zstack {
                                     )+
                                     _ => return EventResult::Deferred,
                                 }
-                                // When entering a new child, use Focus action (backward)
-                                current_event = FocusAction::Focus(FocusDirection::Backward);
+                                // When entering a new child, acquire focus backward
+                                current_event = focus_event.entering(FocusDirection::Backward);
                             }
                         }
                     }
@@ -311,22 +313,30 @@ macro_rules! impl_view_for_zstack {
             ) -> SeekResult<Self::FocusTree> {
                 use super::match_view::[<OneOf $ct>];
 
-                SeekResult::Absent
+                // Under a point, the frontmost layer is the one found.
+                let combine = |earlier: SeekResult<Self::FocusTree>, later: SeekResult<Self::FocusTree>| match seek.target {
+                    SeekTarget::At(_) => later.or(earlier),
+                    _ => earlier.or(later),
+                };
+                let result = SeekResult::Absent;
                 $(
-                    .or(self
-                        .items
-                        .$n
-                        .seek(
-                            seek,
-                            &render_tree.$n,
-                            &state.$n,
-                            match focus {
-                                Some([<OneOf $ct>]::[<V $n>](f)) => Some(f),
-                                _ => None,
-                            },
-                        )
-                        .map([<OneOf $ct>]::[<V $n>]))
+                    let result = combine(
+                        result,
+                        self.items
+                            .$n
+                            .seek(
+                                seek,
+                                &render_tree.$n,
+                                &state.$n,
+                                match focus {
+                                    Some([<OneOf $ct>]::[<V $n>](f)) => Some(f),
+                                    _ => None,
+                                },
+                            )
+                            .map([<OneOf $ct>]::[<V $n>]),
+                    );
                 )+
+                result
             }
 
             fn handle_touch(

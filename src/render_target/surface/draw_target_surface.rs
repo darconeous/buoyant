@@ -45,11 +45,11 @@ impl<D: DrawTarget> Surface for DrawTargetSurface<'_, D> {
     where
         I: IntoIterator<Item = Self::Color>,
     {
-        _ = self.0.fill_contiguous(&area.clone().into(), colors);
+        _ = self.0.fill_contiguous(&(*area).into(), colors);
     }
 
     fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) {
-        _ = self.0.fill_solid(&area.clone().into(), color);
+        _ = self.0.fill_solid(&(*area).into(), color);
     }
 
     fn clear(&mut self, color: Self::Color) {

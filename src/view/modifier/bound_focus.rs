@@ -18,7 +18,8 @@ use embedded_touch::Touch;
 ///
 /// When focus tries to exit the bounded region (via Next/Previous navigation),
 /// this modifier either wraps focus to the other end or stops at the boundary,
-/// depending on the configured [`BoundaryBehavior`].
+/// depending on the configured [`BoundaryBehavior`]. A directional move
+/// ([`Toward`](FocusAction::Toward)) always stops.
 ///
 /// Focus events that should pass through:
 /// - `Blur` - always deferred to parent
@@ -139,12 +140,15 @@ where
         // no focusable elements
 
         // Determine if we were moving forward or backward
-        let is_forward = matches!(
-            focus_event,
-            FocusAction::Next | FocusAction::Focus(FocusDirection::Forward)
-        );
+        let is_forward = focus_event.direction() == Some(FocusDirection::Forward);
 
-        match self.behavior {
+        // A directional move never wraps.
+        let behavior = match focus_event {
+            FocusAction::Toward { .. } => BoundaryBehavior::Stop,
+            _ => self.behavior,
+        };
+
+        match behavior {
             BoundaryBehavior::Wrap => {
                 // Reset focus tree to the opposite end
                 *focus = if is_forward {

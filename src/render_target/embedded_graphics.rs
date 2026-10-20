@@ -192,7 +192,7 @@ where
                 Intersection::Overlaps => {
                     // For now, we just draw on a clipped surface
                     let mut target = self.surface.draw_target();
-                    let mut target = target.clipped(&self.active_layer.clip_rect.clone().into());
+                    let mut target = target.clipped(&self.active_layer.clip_rect.into());
                     if let Some(line) = shape.as_line() {
                         draw_line(&mut target, &line, &transform, &style);
                     } else if let Some(rect) = shape.as_rect() {
@@ -220,7 +220,7 @@ where
                 Intersection::Overlaps => {
                     // There might be a more efficient way to do this
                     let mut surface =
-                        ClippedSurface::new(&mut self.surface, self.active_layer.clip_rect.clone());
+                        ClippedSurface::new(&mut self.surface, self.active_layer.clip_rect);
                     // FIXME: Apply brush transform and clip to shape bounds
                     surface.fill_contiguous(&rect, image.color_iter().map(Into::into));
                 }
@@ -282,7 +282,7 @@ where
             Intersection::Overlaps => {
                 // For now, we just draw on a clipped surface
                 let mut target = self.surface.draw_target();
-                let mut target = target.clipped(&self.active_layer.clip_rect.clone().into());
+                let mut target = target.clipped(&self.active_layer.clip_rect.into());
                 if let Some(line) = shape.as_line() {
                     draw_line(&mut target, &line, &transform, &style);
                 } else if let Some(rect) = shape.as_rect() {
@@ -324,7 +324,7 @@ where
             });
 
         let text_bounds = conservative_bounds.applying(&self.active_layer.transform);
-        let clip_rect = self.active_layer.clip_rect.clone();
+        let clip_rect = self.active_layer.clip_rect;
         match clip_rect.intersection_with(&text_bounds) {
             Intersection::Contains => {
                 glyphs.for_each(|glyph| {

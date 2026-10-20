@@ -2,7 +2,11 @@ mod role;
 
 pub use role::{Role, RoleSet};
 
-use crate::event::Event;
+use crate::{
+    event::Event,
+    layout::LayoutDirection,
+    primitives::{Point, geometry::Rectangle},
+};
 
 /// The direction to search when acquiring focus
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -12,6 +16,40 @@ pub enum FocusDirection {
     Forward,
     /// Search backward (towards the beginning)
     Backward,
+}
+
+/// A direction on screen, for moving focus with arrow keys or a trackball.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    /// Toward the top.
+    Up,
+    /// Toward the bottom.
+    Down,
+    /// Toward the left.
+    Left,
+    /// Toward the right.
+    Right,
+}
+
+impl Direction {
+    /// The axis this direction moves along.
+    #[must_use]
+    pub const fn axis(self) -> LayoutDirection {
+        match self {
+            Self::Up | Self::Down => LayoutDirection::Vertical,
+            Self::Left | Self::Right => LayoutDirection::Horizontal,
+        }
+    }
+
+    /// The order this direction moves through elements laid out along its
+    /// axis: down and right go forward.
+    #[must_use]
+    pub const fn focus_direction(self) -> FocusDirection {
+        match self {
+            Self::Down | Self::Right => FocusDirection::Forward,
+            Self::Up | Self::Left => FocusDirection::Backward,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +63,34 @@ pub enum FocusAction {
     /// If the current container does not match the requested role mask,
     /// the direction will be used to obtain the nearest matching element.
     Focus(FocusDirection),
+    /// Move focus on screen toward `dir`, from `from`, the frame of the
+    /// focused element.
+    ///
+    /// A stack moving along its axis treats this as [`Next`](Self::Next) or
+    /// [`Previous`](Self::Previous), and enters the element it moves to with
+    /// [`Enter`](Self::Enter). Across its axis, it leaves the move to its
+    /// focused element and defers when that element does. A directional
+    /// move never wraps.
+    Toward {
+        /// The direction focus moves.
+        dir: Direction,
+        /// The frame of the focused element, in the coordinates of the view
+        /// receiving the event.
+        from: Rectangle,
+    },
+    /// Acquire focus while moving toward `dir` from `from`, as a
+    /// [`Toward`](Self::Toward) move enters the element it reaches.
+    ///
+    /// It searches as [`Focus`](Self::Focus) does, forward for down and right
+    /// and backward for up and left, except that a stack entered across its
+    /// axis starts at the child nearest `from` along that axis.
+    Enter {
+        /// The direction focus is moving.
+        dir: Direction,
+        /// The frame of the element focus is moving from, in the coordinates
+        /// of the view receiving the event.
+        from: Rectangle,
+    },
     /// Exit the selected container.
     ///
     /// Typically associated with the user pressing a "back" or "menu" button.
@@ -45,6 +111,125 @@ impl FocusAction {
             group,
         }
     }
+
+    /// The order this action searches through elements in, when it moves
+    /// or acquires focus.
+    #[must_use]
+    pub const fn direction(&self) -> Option<FocusDirection> {
+        match self {
+            Self::Next | Self::Focus(FocusDirection::Forward) => Some(FocusDirection::Forward),
+            Self::Previous | Self::Focus(FocusDirection::Backward) => {
+                Some(FocusDirection::Backward)
+            }
+            Self::Toward { dir, .. } | Self::Enter { dir, .. } => Some(dir.focus_direction()),
+            Self::Blur | Self::Select | Self::Teardown => None,
+        }
+    }
+
+    /// Whether this action acquires focus, rather than moving it on from
+    /// an element that has it.
+    #[must_use]
+    pub const fn is_acquire(&self) -> bool {
+        matches!(self, Self::Focus(_) | Self::Enter { .. })
+    }
+
+    /// Whether this action moves focus on from the focused element.
+    #[must_use]
+    pub const fn is_move(&self) -> bool {
+        matches!(self, Self::Next | Self::Previous | Self::Toward { .. })
+    }
+
+    /// The action that acquires focus in an element this action moves to,
+    /// searching in `direction`.
+    ///
+    /// A directional move enters with [`Enter`](Self::Enter), so the element
+    /// can start nearest where focus came from; anything else acquires with
+    /// [`Focus`](Self::Focus).
+    #[must_use]
+    pub const fn entering(&self, direction: FocusDirection) -> Self {
+        match *self {
+            Self::Toward { dir, from } | Self::Enter { dir, from } => Self::Enter { dir, from },
+            _ => Self::Focus(direction),
+        }
+    }
+
+    /// The same action, with a frame it carries moved by `offset`: for a
+    /// view that places its content away from where the content lays itself
+    /// out, such as a scroll view.
+    #[must_use]
+    pub fn offset(self, offset: Point) -> Self {
+        match self {
+            Self::Toward { dir, from } => Self::Toward {
+                dir,
+                from: Rectangle::new(from.origin + offset, from.size),
+            },
+            Self::Enter { dir, from } => Self::Enter {
+                dir,
+                from: Rectangle::new(from.origin + offset, from.size),
+            },
+            other => other,
+        }
+    }
+
+    /// The order a stack laid out along `axis` steps through its children
+    /// in once its focused child defers this action, or `None` when it
+    /// defers too.
+    ///
+    /// A stack with no axis, whose children are layers, passes `None`: it
+    /// leaves a directional move to its focused layer.
+    pub(crate) fn stack_step(&self, axis: Option<LayoutDirection>) -> Option<FocusDirection> {
+        match self {
+            Self::Select => Some(FocusDirection::Forward),
+            Self::Toward { dir, .. } if axis != Some(dir.axis()) => None,
+            _ => self.direction(),
+        }
+    }
+}
+
+/// The center of `frame` along `axis`.
+pub(crate) const fn center_along(frame: &Rectangle, axis: LayoutDirection) -> i32 {
+    match axis {
+        LayoutDirection::Horizontal => frame.origin.x + frame.size.width as i32 / 2,
+        LayoutDirection::Vertical => frame.origin.y + frame.size.height as i32 / 2,
+    }
+}
+
+/// The indices `0..len` in order of the distance of their centers from
+/// `target`, nearest first, for children laid out in order along an axis.
+///
+/// Laid out in order, the distances fall to the nearest child and rise after
+/// it, so the order is found walking outward from it.
+pub(crate) fn nearest_first(
+    len: usize,
+    center: impl Fn(usize) -> i32,
+    target: i32,
+) -> impl Iterator<Item = usize> {
+    let distance = move |index: usize| center(index).abs_diff(target);
+    let nearest = (0..len).min_by_key(|&index| distance(index));
+    // The children not yet visited on either side of those visited.
+    let mut before = nearest;
+    let mut after = nearest.map(|nearest| nearest + 1);
+    let mut first = nearest;
+    core::iter::from_fn(move || {
+        if let Some(index) = first.take() {
+            return Some(index);
+        }
+        let below = before.and_then(|index| index.checked_sub(1));
+        let above = after.filter(|&index| index < len);
+        let take_below = match (below, above) {
+            (Some(below), Some(above)) => distance(below) <= distance(above),
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => return None,
+        };
+        if take_below {
+            before = below;
+            below
+        } else {
+            after = above.map(|index| index + 1);
+            above
+        }
+    })
 }
 
 /// A stable name for a focusable element, chosen by the application.
@@ -123,6 +308,9 @@ pub enum SeekTarget {
     Any,
     /// The innermost open modal, such as a popover's overlay.
     Modal,
+    /// The element that can be focused under this point, in the
+    /// coordinates of the view sought in.
+    At(Point),
 }
 
 /// A lookup made with [`seek`](crate::view::ViewLayout::seek).
@@ -369,6 +557,18 @@ mod tests {
             assert_eq!(group, unchecked_group);
             assert_eq!(group.index(), i);
         }
+    }
+
+    #[test]
+    fn children_are_tried_nearest_first() {
+        let centers = [0, 10, 20, 30, 40];
+        let order: heapless::Vec<usize, 5> =
+            nearest_first(centers.len(), |index| centers[index], 22).collect();
+        assert_eq!(order, [2, 3, 1, 4, 0]);
+        let order: heapless::Vec<usize, 5> =
+            nearest_first(centers.len(), |index| centers[index], -5).collect();
+        assert_eq!(order, [0, 1, 2, 3, 4]);
+        assert_eq!(nearest_first(0, |_| 0, 0).count(), 0);
     }
 
     #[test]

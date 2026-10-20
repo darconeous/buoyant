@@ -6,8 +6,8 @@ use embedded_touch::Touch;
 
 use crate::{
     environment::LayoutEnvironment,
-    event::{Event, EventContext, EventResult, Key, TouchResult},
-    focus::{FocusAction, Role, Seek, SeekResult, SeekTarget},
+    event::{Event, EventContext, EventResult, Key, TextAreaGeometry, TextAreaQuery, TouchResult},
+    focus::{DefaultFocus, FocusAction, Role, Seek, SeekResult, SeekTarget},
     font::{CustomSize, Font, FontMetrics},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimension, ProposedDimensions, Size, geometry::Rectangle},
@@ -131,6 +131,12 @@ impl<T: EditText> EditBuffer<T> {
         }
         self.cursor = start;
         true
+    }
+
+    /// Places the cursor at `index`, a byte index into the text, moved back
+    /// to a character boundary and kept within the text.
+    pub fn set_cursor(&mut self, index: usize) {
+        self.cursor = self.clamped(index);
     }
 
     /// Moves the cursor back one character. Returns `false` at the start.
@@ -280,6 +286,93 @@ fn advance_of(text: &str, metrics: &impl FontMetrics) -> u32 {
         .sum()
 }
 
+/// The width `text` wraps at in an area `width` wide: text longer than
+/// `max_lines` leaves `scroll_bar_room` beside it for the scroll bar.
+fn wrap_width(
+    text: &str,
+    width: u32,
+    scroll_bar_room: u32,
+    max_lines: u16,
+    metrics: &impl FontMetrics,
+) -> u32 {
+    if scroll_bar_room > 0
+        && EditLines::new(text, width, metrics)
+            .nth(usize::from(max_lines))
+            .is_some()
+    {
+        width.saturating_sub(scroll_bar_room)
+    } else {
+        width
+    }
+}
+
+/// The line holding `cursor`, and how far into it the cursor is. A cursor at
+/// a break begins the next line.
+fn caret_of(text: &str, cursor: usize, wrap: u32, metrics: &impl FontMetrics) -> (usize, u32) {
+    let mut last = (0, 0..0);
+    for (index, line) in EditLines::new(text, wrap, metrics).enumerate() {
+        if cursor < line.end {
+            return (index, advance_of(&text[line.start..cursor], metrics));
+        }
+        last = (index, line);
+    }
+    let (index, line) = last;
+    (
+        index,
+        advance_of(&text[line.start..cursor.max(line.start)], metrics),
+    )
+}
+
+/// Where the cursor goes a line up or down from `cursor`, with text wrapped
+/// at `wrap`: as near across the line as `goal`, or as the cursor already is
+/// without one. Returns the new cursor and the goal kept for the next move,
+/// or `None` from the first line up or the last line down.
+fn line_move(
+    text: &str,
+    cursor: usize,
+    wrap: u32,
+    metrics: &impl FontMetrics,
+    down: bool,
+    goal: Option<u32>,
+) -> Option<(usize, u32)> {
+    let (line, x) = caret_of(text, cursor, wrap, metrics);
+    let goal = goal.unwrap_or(x);
+    let target = if down { line + 1 } else { line.checked_sub(1)? };
+    let mut lines = EditLines::new(text, wrap, metrics).skip(target).peekable();
+    let range = lines.next()?;
+    // A cursor at a break begins the next line, so only the last line holds
+    // its end.
+    let last = lines.peek().is_none();
+    let mut best = (range.start, goal);
+    let mut x = 0;
+    for (offset, c) in text[range.clone()].char_indices() {
+        if c == '\n' {
+            break;
+        }
+        x += metrics.advance(c);
+        let index = range.start + offset + c.len_utf8();
+        if index == range.end && !last {
+            break;
+        }
+        let distance = x.abs_diff(goal);
+        if distance >= best.1 {
+            break;
+        }
+        best = (index, distance);
+    }
+    Some((best.0, goal))
+}
+
+/// Where the cursor heads across lines: kept while it moves up and down, so
+/// it returns to its column after passing through a shorter line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineGoal {
+    /// The cursor the last move left, which the goal belongs to.
+    cursor: usize,
+    /// How far across a line the cursor heads.
+    x: u32,
+}
+
 /// What a field does when Enter is pressed while it is active.
 pub trait OnSubmit<C: ?Sized> {
     /// Handles the submission. Returns `false` to leave Enter unhandled.
@@ -329,6 +422,9 @@ impl<C: ?Sized> OnActive<C> for NoActive {
 pub struct TextFieldStatus {
     focused: bool,
     active: bool,
+    /// Focus moved away by direction while the field was edited: editing
+    /// resumes when focus returns.
+    resume: bool,
 }
 
 impl TextFieldStatus {
@@ -352,7 +448,11 @@ impl TextFieldStatus {
 /// further up, and a character, Enter or a press activates it, a character
 /// also being inserted. Active, it holds focus: turning moves the cursor,
 /// Backspace erases, and Enter submits; submitting, a press, a blur, or
-/// Backspace with no text makes it inactive.
+/// Backspace with no text makes it inactive. The arrow keys move the
+/// cursor, Up and Down by the lines shown; Up from the first line and Down
+/// from the last are left to the views around, so focus can move on. A
+/// directional move ([`Toward`](FocusAction::Toward)) takes focus even
+/// from an active field, and the edit resumes when focus returns.
 ///
 /// Whether the field is active is its own state, so it lasts while the
 /// field is shown and is forgotten when it is not; the text is the
@@ -534,7 +634,9 @@ where
     ViewFn: Fn(TextFieldStatus, TextArea<'a, B, F>) -> Inner,
     Inner: ViewLayout<C, Renderables: IntrinsicShape>,
 {
-    type State = (TextFieldStatus, Inner::State);
+    /// The field's status, its label's state, and where the cursor heads
+    /// across lines.
+    type State = (TextFieldStatus, Inner::State, Option<LineGoal>);
     type Sublayout = ResolvedLayout<Inner::Sublayout>;
     type FocusTree = ();
 
@@ -545,7 +647,7 @@ where
     fn build_state(&self, captures: &mut C) -> Self::State {
         let status = TextFieldStatus::default();
         let inner = (self.label)(status, self.area(status)).build_state(captures);
-        (status, inner)
+        (status, inner, None)
     }
 
     fn layout(
@@ -589,23 +691,35 @@ where
         state: &mut Self::State,
         _focus: &mut Self::FocusTree,
     ) -> EventResult {
-        let status = &mut state.0;
-        let was_active = status.active;
+        let was_active = state.0.active;
         let result = match event {
             Event::Focus { action, .. } => {
                 if !context.roles.contains(Role::TextEntry) {
                     return EventResult::Deferred;
                 }
+                state.2 = None;
                 self.handle_focus(
                     *action,
                     context,
                     captures,
-                    status,
+                    &mut state.0,
                     render_tree.content_shape(),
                 )
             }
-            Event::KeyDown(key) if status.focused => {
-                self.handle_key(*key, context, captures, status)
+            Event::KeyDown(key @ (Key::UpArrow | Key::DownArrow))
+                if state.0.focused && state.0.active =>
+            {
+                self.move_line(
+                    *key == Key::DownArrow,
+                    context,
+                    render_tree,
+                    captures,
+                    state,
+                )
+            }
+            Event::KeyDown(key) if state.0.focused => {
+                state.2 = None;
+                self.handle_key(*key, context, captures, &mut state.0)
             }
             _ => EventResult::Deferred,
         };
@@ -618,12 +732,18 @@ where
     fn seek(
         &self,
         seek: &Seek,
-        _render_tree: &Self::Renderables,
+        render_tree: &Self::Renderables,
         _state: &Self::State,
         _focus: Option<&Self::FocusTree>,
     ) -> SeekResult<Self::FocusTree> {
+        if !seek.roles.contains(Role::TextEntry) {
+            return SeekResult::Absent;
+        }
         match seek.target {
-            SeekTarget::Any if seek.roles.contains(Role::TextEntry) => SeekResult::found(()),
+            SeekTarget::Any => SeekResult::found(()),
+            SeekTarget::At(point) if render_tree.content_shape().contains(point) => {
+                SeekResult::found(())
+            }
             _ => SeekResult::Absent,
         }
     }
@@ -640,7 +760,7 @@ where
     }
 }
 
-impl<B: EditText, F: Font, L, S, ViewFn, A> TextField<'_, B, F, L, S, ViewFn, A> {
+impl<'a, B: EditText, F: Font, L, S, ViewFn, A> TextField<'a, B, F, L, S, ViewFn, A> {
     fn handle_focus<C: ?Sized>(
         &self,
         action: FocusAction,
@@ -654,8 +774,9 @@ impl<B: EditText, F: Font, L, S, ViewFn, A> TextField<'_, B, F, L, S, ViewFn, A>
     {
         let before = *status;
         let result = match action {
-            FocusAction::Focus(_) => {
+            FocusAction::Focus(_) | FocusAction::Enter { .. } => {
                 status.focused = true;
+                status.active |= core::mem::take(&mut status.resume);
                 EventResult::handled_focused(shape)
             }
             FocusAction::Next | FocusAction::Previous if status.active => {
@@ -681,6 +802,16 @@ impl<B: EditText, F: Font, L, S, ViewFn, A> TextField<'_, B, F, L, S, ViewFn, A>
                 *status = TextFieldStatus::default();
                 EventResult::handled_unfocused()
             }
+            // A directional move leaves the field even while it is edited.
+            // The edit waits for focus to return, as it does at once when
+            // the move leads nowhere.
+            FocusAction::Toward { .. } => {
+                *status = TextFieldStatus {
+                    resume: status.active || status.resume,
+                    ..TextFieldStatus::default()
+                };
+                EventResult::Deferred
+            }
             FocusAction::Next | FocusAction::Previous | FocusAction::Blur => {
                 status.focused = false;
                 EventResult::Deferred
@@ -690,6 +821,63 @@ impl<B: EditText, F: Font, L, S, ViewFn, A> TextField<'_, B, F, L, S, ViewFn, A>
             context.request_view_rebuild();
         }
         result
+    }
+
+    /// Moves the cursor a line up or down, through the lines the text area
+    /// in the label shows, keeping to the column the cursor started from
+    /// across moves. From the first line up or the last line down, the key
+    /// is not handled, so focus can move on.
+    fn move_line<C: ?Sized, Inner>(
+        &self,
+        down: bool,
+        context: &EventContext,
+        render_tree: &mut Inner::Renderables,
+        captures: &mut C,
+        state: &mut (TextFieldStatus, Inner::State, Option<LineGoal>),
+    ) -> EventResult
+    where
+        L: Fn(&mut C) -> Option<&mut EditBuffer<B>>,
+        ViewFn: Fn(TextFieldStatus, TextArea<'a, B, F>) -> Inner,
+        Inner: ViewLayout<C>,
+    {
+        let query = Event::TextArea(TextAreaQuery::default());
+        _ = (self.label)(state.0, self.area(state.0)).handle_event(
+            &query,
+            context,
+            render_tree,
+            captures,
+            &mut state.1,
+            &mut DefaultFocus::default_first(),
+        );
+        let Event::TextArea(query) = query else {
+            unreachable!();
+        };
+        let (Some(area), Some(buffer)) = (query.answer.get(), (self.lens)(captures)) else {
+            return EventResult::Deferred;
+        };
+        let metrics = self.font.metrics(&self.attributes);
+        let text = buffer.text();
+        let wrap = wrap_width(
+            text,
+            area.width,
+            area.scroll_bar_room,
+            self.max_lines,
+            &metrics,
+        );
+        let goal = state
+            .2
+            .filter(|goal| goal.cursor == buffer.cursor())
+            .map(|goal| goal.x);
+        let Some((cursor, x)) = line_move(text, buffer.cursor(), wrap, &metrics, down, goal) else {
+            return EventResult::Deferred;
+        };
+        buffer.set_cursor(cursor);
+        state.2 = Some(LineGoal {
+            cursor: buffer.cursor(),
+            x,
+        });
+        context.request_view_rebuild();
+        EventResult::handled_unfocused()
     }
 
     fn handle_key<C: ?Sized>(
@@ -854,35 +1042,10 @@ impl<C: ?Sized, B: EditText, F: Font, K: Clone> ViewLayout<C> for TextArea<'_, B
             }
         };
         // Text longer than the area leaves room for the scroll bar beside it.
-        let wrap = if self.scroll_bar_room > 0
-            && EditLines::new(text, width, &metrics)
-                .nth(usize::from(self.max_lines))
-                .is_some()
-        {
-            width.saturating_sub(self.scroll_bar_room)
-        } else {
-            width
-        };
+        let wrap = wrap_width(text, width, self.scroll_bar_room, self.max_lines, &metrics);
 
-        // The line holding the cursor, where a cursor at a break begins the
-        // next line, and how far into it the cursor is.
-        let cursor = self.buffer.cursor();
-        let mut line_count = 0;
-        let mut caret = None;
-        let mut last = 0..0;
-        for (index, line) in EditLines::new(text, wrap, &metrics).enumerate() {
-            line_count = index + 1;
-            if caret.is_none() && cursor < line.end {
-                caret = Some((index, advance_of(&text[line.start..cursor], &metrics)));
-            }
-            last = line;
-        }
-        let (caret_line, caret_x) = caret.unwrap_or_else(|| {
-            (
-                line_count - 1,
-                advance_of(&text[last.start..cursor.max(last.start)], &metrics),
-            )
-        });
+        let line_count = EditLines::new(text, wrap, &metrics).count();
+        let (caret_line, caret_x) = caret_of(text, self.buffer.cursor(), wrap, &metrics);
 
         // Keep the cursor's line in view.
         let visible = line_count.clamp(1, usize::from(self.max_lines));
@@ -941,7 +1104,7 @@ impl<C: ?Sized, B: EditText, F: Font, K: Clone> ViewLayout<C> for TextArea<'_, B
             text: self.buffer.text.clone(),
             lines: layout.lines.clone(),
             line_height: layout.line_height,
-            caret: layout.caret.clone(),
+            caret: layout.caret,
             scrolled: layout.scrolled,
             style: self.style.clone(),
         }
@@ -949,14 +1112,23 @@ impl<C: ?Sized, B: EditText, F: Font, K: Clone> ViewLayout<C> for TextArea<'_, B
 
     fn handle_event(
         &self,
-        _event: &Event,
+        event: &Event,
         _context: &EventContext,
-        _render_tree: &mut Self::Renderables,
+        render_tree: &mut Self::Renderables,
         _captures: &mut C,
         _state: &mut Self::State,
         _focus: &mut Self::FocusTree,
     ) -> EventResult {
-        EventResult::Deferred
+        match event {
+            Event::TextArea(query) => {
+                query.answer.set(Some(TextAreaGeometry {
+                    width: render_tree.size.width,
+                    scroll_bar_room: self.scroll_bar_room,
+                }));
+                EventResult::handled_unfocused()
+            }
+            _ => EventResult::Deferred,
+        }
     }
 
     fn seek(

@@ -5,7 +5,9 @@ use embedded_touch::Touch;
 use crate::{
     environment::LayoutEnvironment,
     event::{Event, EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusAction, FocusDirection, Seek, SeekResult},
+    focus::{
+        DefaultFocus, FocusAction, FocusDirection, Seek, SeekResult, center_along, nearest_first,
+    },
     layout::{HorizontalAlignment, LayoutDirection, ResolvedLayout},
     primitives::{Dimension, Dimensions, Point, ProposedDimension, ProposedDimensions},
     view::{ViewLayout, ViewMarker, modifier::FixedSize},
@@ -87,6 +89,25 @@ impl<T: ViewMarker> VStack<T> {
         Self: ViewMarker,
     {
         FixedSize::new(false, true, self)
+    }
+}
+
+/// The state of a stack's children, and where they were last placed.
+#[derive(Debug, Clone)]
+pub struct StackState<S, const N: usize> {
+    pub(crate) items: S,
+    /// The center of each child along the stack's axis, where its render
+    /// tree was last built, for focus entering across the axis to start at
+    /// the child nearest where it comes from.
+    pub(crate) centers: [i32; N],
+}
+
+impl<S, const N: usize> StackState<S, N> {
+    pub(crate) const fn new(items: S) -> Self {
+        Self {
+            items,
+            centers: [0; N],
+        }
     }
 }
 
@@ -240,7 +261,7 @@ macro_rules! impl_view_for_vstack {
         where
             $($type: ViewLayout<Captures>),+
         {
-            type State = ($($type::State),+);
+            type State = StackState<($($type::State),+), $ct>;
             // FIXME: Could just be width + sublayouts?
             type Sublayout = ResolvedLayout<($(ResolvedLayout<$type::Sublayout>),+)>;
             type FocusTree = super::match_view::[<OneOf $ct>]<$($type::FocusTree),+>;
@@ -250,7 +271,7 @@ macro_rules! impl_view_for_vstack {
             }
 
             fn build_state(&self, captures: &mut Captures) -> Self::State {
-                ($(self.items.$n.build_state(captures)),+)
+                StackState::new(($(self.items.$n.build_state(captures)),+))
             }
 
             fn layout(
@@ -273,7 +294,7 @@ macro_rules! impl_view_for_vstack {
                     let mut [<f$n>] = |size: ProposedDimensions| {
                         // Calls to this layout cannot overlap, so this borrow will not conflict
                         let mut captures = captures_cell.borrow_mut();
-                        let layout = self.items.$n.layout(&size, env, &mut *captures, &mut state.$n);
+                        let layout = self.items.$n.layout(&size, env, &mut *captures, &mut state.items.$n);
                         let size = layout.resolved_size;
                         [<c$n>] = Some(layout);
                         size
@@ -321,11 +342,12 @@ macro_rules! impl_view_for_vstack {
                         offset,
                         env,
                         captures,
-                        &mut state.$n,
+                        &mut state.items.$n,
                     );
 
+                    let child_height: u32 = layout.sublayouts.$n.resolved_size.height.into();
+                    state.centers[$n] = offset.y + (child_height / 2) as i32;
                     if !self.items.$n.is_empty() {
-                        let child_height: u32 = layout.sublayouts.$n.resolved_size.height.into();
                         height_offset += (child_height + self.spacing) as i32;
                     }
                 )+
@@ -333,6 +355,7 @@ macro_rules! impl_view_for_vstack {
                 ($([<subtree_$n>]),+)
             }
 
+            #[allow(clippy::too_many_lines)]
             fn handle_event(
                 &self,
                 event: &Event,
@@ -345,6 +368,42 @@ macro_rules! impl_view_for_vstack {
                 // Handle focus events specially - they need to route through the focus tree
                 if let Event::Focus { action: focus_event, group } = event {
                     use super::match_view::[<OneOf $ct>];
+
+                    // Entered across its axis, the stack starts at the child
+                    // nearest where focus comes from.
+                    if let FocusAction::Enter { dir, from } = focus_event
+                        && dir.axis() != LayoutDirection::Vertical
+                    {
+                        let centers = state.centers;
+                        let target = center_along(from, LayoutDirection::Vertical);
+                        for index in nearest_first($ct, |index| centers[index], target) {
+                            let result = match index {
+                                $(
+                                    $n => {
+                                        let mut inner = match dir.focus_direction() {
+                                            FocusDirection::Forward => DefaultFocus::default_first(),
+                                            FocusDirection::Backward => DefaultFocus::default_last(),
+                                        };
+                                        let result = self.items.$n.handle_event(
+                                            event,
+                                            context,
+                                            &mut render_tree.$n,
+                                            captures,
+                                            &mut state.items.$n,
+                                            &mut inner,
+                                        );
+                                        *focus = [<OneOf $ct>]::[<V $n>](inner);
+                                        result
+                                    }
+                                )+
+                                _ => unreachable!(),
+                            };
+                            if result.is_handled() {
+                                return result;
+                            }
+                        }
+                        return EventResult::Deferred;
+                    }
 
                     // Track which child index we're currently trying
                     let mut current: usize = match focus {
@@ -367,7 +426,7 @@ macro_rules! impl_view_for_vstack {
                                         context,
                                         &mut render_tree.$n,
                                         captures,
-                                        &mut state.$n,
+                                        &mut state.items.$n,
                                         f,
                                     )
                                 }
@@ -379,13 +438,14 @@ macro_rules! impl_view_for_vstack {
                             return result;
                         }
 
-                        // Child is exhausted, try to move based on action
-                        match focus_event {
-                            FocusAction::Blur | FocusAction::Teardown => {
+                        // Child is exhausted, try to move based on action. A
+                        // move across the axis is the child's alone.
+                        match focus_event.stack_step(Some(LayoutDirection::Vertical)) {
+                            None => {
                                 debug_assert!(!matches!(focus_event, FocusAction::Teardown), "Teardown events should not loop");
                                 return EventResult::Deferred;
                             }
-                            FocusAction::Focus(FocusDirection::Forward) | FocusAction::Select | FocusAction::Next => {
+                            Some(FocusDirection::Forward) => {
                                 // Advance to next child
                                 current += 1;
                                 match current {
@@ -396,10 +456,10 @@ macro_rules! impl_view_for_vstack {
                                     )+
                                     _ => return EventResult::Deferred,
                                 }
-                                // When entering a new child, use Focus action (forward)
-                                current_event = FocusAction::Focus(FocusDirection::Forward);
+                                // When entering a new child, acquire focus forward
+                                current_event = focus_event.entering(FocusDirection::Forward);
                             }
-                            FocusAction::Focus(FocusDirection::Backward) | FocusAction::Previous => {
+                            Some(FocusDirection::Backward) => {
                                 // Go to previous child
                                 if current == 0 {
                                     return EventResult::Deferred;
@@ -413,8 +473,8 @@ macro_rules! impl_view_for_vstack {
                                     )+
                                     _ => return EventResult::Deferred,
                                 }
-                                // When entering a new child, use Focus action (backward)
-                                current_event = FocusAction::Focus(FocusDirection::Backward);
+                                // When entering a new child, acquire focus backward
+                                current_event = focus_event.entering(FocusDirection::Backward);
                             }
                         }
                     }
@@ -427,7 +487,7 @@ macro_rules! impl_view_for_vstack {
                                 context,
                                 &mut render_tree.$n,
                                 captures,
-                                &mut state.$n,
+                                &mut state.items.$n,
                                 f,
                             ),
                         )+
@@ -442,7 +502,7 @@ macro_rules! impl_view_for_vstack {
                         context,
                         &mut render_tree.$n,
                         captures,
-                        &mut state.$n,
+                        &mut state.items.$n,
                         inner_focus,
                     );
                     if result.is_handled() {
@@ -470,7 +530,7 @@ macro_rules! impl_view_for_vstack {
                         .seek(
                             seek,
                             &render_tree.$n,
-                            &state.$n,
+                            &state.items.$n,
                             match focus {
                                 Some([<OneOf $ct>]::[<V $n>](f)) => Some(f),
                                 _ => None,
@@ -494,7 +554,7 @@ macro_rules! impl_view_for_vstack {
                         context,
                         &mut render_tree.$n,
                         captures,
-                        &mut state.$n,
+                        &mut state.items.$n,
                     ) {
                         TouchResult::Focused(f) => {
                             return TouchResult::Focused(

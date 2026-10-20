@@ -24,8 +24,7 @@ impl<T> Container<T> {
 
 impl<T: AnimatedJoin> AnimatedJoin for Container<T> {
     fn join_from(&mut self, source: &Self, domain: &AnimationDomain) {
-        self.frame =
-            Rectangle::interpolate(source.frame.clone(), self.frame.clone(), domain.factor);
+        self.frame = Rectangle::interpolate(source.frame, self.frame, domain.factor);
         self.child.join_from(&source.child, domain);
     }
 }

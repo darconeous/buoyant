@@ -7,7 +7,7 @@ use embedded_touch::Touch;
 use crate::{
     environment::LayoutEnvironment,
     event::{EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusKey, Seek, SeekResult, SeekTarget},
+    focus::{DefaultFocus, FocusKey, Seek, SeekResult, SeekTarget, center_along, nearest_first},
     layout::{HorizontalAlignment, LayoutDirection, ResolvedLayout, VerticalAlignment},
     primitives::{Dimension, Dimensions, Point, ProposedDimension, ProposedDimensions},
     transition::Opacity,
@@ -329,6 +329,10 @@ impl<T: DefaultFocus> Default for Focus<T> {
 pub struct ForEachState<S, const N: usize> {
     keys: heapless::Vec<Option<FocusKey>, N>,
     items: heapless::Vec<S, N>,
+    /// The center of each item along the axis, where its render tree was
+    /// last built, for focus entering across the axis to start at the item
+    /// nearest where it comes from.
+    centers: heapless::Vec<i32, N>,
 }
 
 impl<'a, const N: usize, I, V, F, D, K> ForEachView<'a, N, I, V, F, D, K>
@@ -446,6 +450,7 @@ where
         let mut state = ForEachState {
             keys: heapless::Vec::new(),
             items: heapless::Vec::new(),
+            centers: heapless::Vec::new(),
         };
         for item in self.items {
             let view = (self.build_view)(item);
@@ -526,6 +531,7 @@ where
 
         let mut accumulated_size = 0;
         let mut renderables = heapless::Vec::new();
+        state.centers.clear();
 
         for ((item_layout, item), item_state) in layout
             .sublayouts
@@ -551,11 +557,16 @@ where
             ));
             assert!(item.is_ok());
 
+            let item_size = self
+                .direction_with_alignment
+                .size_of(item_layout.resolved_size);
+            let center = match D::layout_dir() {
+                LayoutDirection::Horizontal => aligned_origin.x,
+                LayoutDirection::Vertical => aligned_origin.y,
+            } + item_size / 2;
+            _ = state.centers.push(center);
             if !view.is_empty() {
-                accumulated_size += self
-                    .direction_with_alignment
-                    .size_of(item_layout.resolved_size)
-                    + self.spacing as i32;
+                accumulated_size += item_size + self.spacing as i32;
             }
         }
 
@@ -575,7 +586,11 @@ where
         use crate::event::Event;
         use crate::focus::{FocusAction, FocusDirection};
 
-        let state = &mut state.items;
+        let ForEachState {
+            items: state,
+            centers,
+            ..
+        } = state;
         // Only as many items as were laid out can take events.
         let len = self.items.len().min(state.len()).min(render_tree.len());
         self.resolve_focus(focus);
@@ -586,6 +601,38 @@ where
             group,
         } = event
         {
+            // Entered across its axis, the list starts at the item nearest
+            // where focus comes from.
+            if let FocusAction::Enter { dir, from } = focus_event
+                && dir.axis() != D::layout_dir()
+            {
+                let len = len.min(centers.len());
+                let target = center_along(from, D::layout_dir());
+                for index in nearest_first(len, |index| centers[index], target) {
+                    focus.index = index;
+                    focus.key = self.key_at(index);
+                    focus.tree = match dir.focus_direction() {
+                        FocusDirection::Forward => DefaultFocus::default_first(),
+                        FocusDirection::Backward => DefaultFocus::default_last(),
+                    };
+                    let result = (self.build_view)(&self.items[index]).handle_event(
+                        event,
+                        context,
+                        &mut render_tree[index],
+                        captures,
+                        &mut state[index],
+                        &mut focus.tree,
+                    );
+                    if result.is_handled() {
+                        return match focus.key {
+                            Some(key) => result.with_key(key),
+                            None => result,
+                        };
+                    }
+                }
+                return EventResult::Deferred;
+            }
+
             // Get the current focused index, resolving the usize::MAX sentinel to the actual last index
             let mut current = if focus.index == usize::MAX {
                 // Sentinel for "last" - resolve to actual last index
@@ -638,14 +685,13 @@ where
                     };
                 }
 
-                // Child is exhausted, try to move based on action
-                match focus_event {
-                    FocusAction::Blur | FocusAction::Teardown => {
+                // Child is exhausted, try to move based on action. A move
+                // across the axis is the child's alone.
+                match focus_event.stack_step(Some(D::layout_dir())) {
+                    None => {
                         return EventResult::Deferred;
                     }
-                    FocusAction::Focus(FocusDirection::Forward)
-                    | FocusAction::Select
-                    | FocusAction::Next => {
+                    Some(FocusDirection::Forward) => {
                         // Advance to next child
                         current += 1;
                         if current >= len {
@@ -653,10 +699,10 @@ where
                         }
                         focus.index = current;
                         focus.tree = <V::FocusTree as DefaultFocus>::default_first();
-                        // When entering a new child, use Focus action (forward)
-                        current_event = FocusAction::Focus(FocusDirection::Forward);
+                        // When entering a new child, acquire focus forward
+                        current_event = focus_event.entering(FocusDirection::Forward);
                     }
-                    FocusAction::Focus(FocusDirection::Backward) | FocusAction::Previous => {
+                    Some(FocusDirection::Backward) => {
                         // Go to previous child
                         if current == 0 {
                             return EventResult::Deferred;
@@ -664,8 +710,8 @@ where
                         current -= 1;
                         focus.index = current;
                         focus.tree = <V::FocusTree as DefaultFocus>::default_last();
-                        // When entering a new child, use Focus action (backward)
-                        current_event = FocusAction::Focus(FocusDirection::Backward);
+                        // When entering a new child, acquire focus backward
+                        current_event = focus_event.entering(FocusDirection::Backward);
                     }
                 }
             }

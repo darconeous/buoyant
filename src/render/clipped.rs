@@ -21,11 +21,7 @@ impl<T> Clipped<T> {
 impl<T: AnimatedJoin> AnimatedJoin for Clipped<T> {
     fn join_from(&mut self, source: &Self, domain: &AnimationDomain) {
         self.subtree.join_from(&source.subtree, domain);
-        self.clip_rect = Rectangle::interpolate(
-            source.clip_rect.clone(),
-            self.clip_rect.clone(),
-            domain.factor,
-        );
+        self.clip_rect = Rectangle::interpolate(source.clip_rect, self.clip_rect, domain.factor);
     }
 }
 
@@ -46,11 +42,7 @@ impl<T: Render<C>, C: Interpolate + Copy> Render<C> for Clipped<T> {
         style: &C,
         domain: &super::AnimationDomain,
     ) {
-        let clip_rect = Rectangle::interpolate(
-            source.clip_rect.clone(),
-            target.clip_rect.clone(),
-            domain.factor,
-        );
+        let clip_rect = Rectangle::interpolate(source.clip_rect, target.clip_rect, domain.factor);
         render_target.with_layer(
             |l| l.clip(&clip_rect),
             |render_target| {

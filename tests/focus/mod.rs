@@ -1,4 +1,5 @@
 mod binding;
+mod directional;
 mod modifier {
     mod background;
     mod bound_focus;

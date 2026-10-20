@@ -6,8 +6,8 @@ use embedded_touch::{Phase, Touch};
 
 use crate::{
     event::{Event, EventContext, EventResult, TouchResult},
-    focus::{FocusAction, FocusDirection, FocusGroup, FocusKey, Seek, SeekResult},
-    layout::ResolvedLayout,
+    focus::{FocusAction, FocusDirection, FocusGroup, FocusKey, Seek, SeekResult, SeekTarget},
+    layout::{LayoutDirection, ResolvedLayout},
     primitives::{
         Dimensions, Point, ProposedDimension, ProposedDimensions, Size, geometry::Rectangle,
     },
@@ -348,6 +348,11 @@ impl<Inner> ScrollView<Inner> {
             ScrollDirection::Both => (true, true),
         };
         ContentPinning::Pinned(horizontal, vertical)
+    }
+
+    /// Where the content's origin is placed.
+    fn content_origin<R>(render_tree: &ScrollRenderable<R>) -> Point {
+        render_tree.offset() + render_tree.inner.offset
     }
 
     /// Where `frame`, a shape within the content, is on screen, with the
@@ -761,14 +766,26 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             group,
         } = event
         {
-            if let Some(result) = self.step_through(*focus_event, context, render_tree, state) {
+            // A move up or down takes the path the wheel does through the
+            // content, stepping through and past it.
+            let sequence = match focus_event {
+                FocusAction::Toward { dir, .. } if dir.axis() == LayoutDirection::Vertical => {
+                    match dir.focus_direction() {
+                        FocusDirection::Forward => FocusAction::Next,
+                        FocusDirection::Backward => FocusAction::Previous,
+                    }
+                }
+                other => *other,
+            };
+            if let Some(result) = self.step_through(sequence, context, render_tree, state) {
                 return result;
             }
 
-            // Route focus event to inner view
+            // Route focus event to inner view, where the content lays itself
+            // out.
             let mut result = self.inner.handle_event(
                 &Event::Focus {
-                    action: *focus_event,
+                    action: focus_event.offset(-Self::content_origin(render_tree)),
                     group: *group,
                 },
                 context,
@@ -780,7 +797,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
 
             if matches!(result, EventResult::Deferred)
                 && let Some(past) = self.scroll_past_boundary(
-                    *focus_event,
+                    sequence,
                     *group,
                     context,
                     render_tree,
@@ -803,8 +820,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                 // navigating or by focus landing on a different element.
                 // Acquiring focus in place, as a rebuild does, follows it too,
                 // unless the content was scrolled away from it by hand since.
-                let navigating = matches!(focus_event, FocusAction::Next | FocusAction::Previous)
-                    || *key != state.focused_key;
+                let navigating = focus_event.is_move() || *key != state.focused_key;
                 state.focused_key = *key;
                 state.focused_shape = shape.clone();
                 state.focused_group = *found_group;
@@ -812,8 +828,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                     state.follows_focus = true;
                 }
                 let should_auto_scroll = state.interaction == ScrollInteraction::Idle
-                    && (navigating
-                        || (matches!(focus_event, FocusAction::Focus(_)) && state.follows_focus));
+                    && (navigating || (focus_event.is_acquire() && state.follows_focus));
 
                 if should_auto_scroll {
                     let scroll_view_frame = render_tree.bounds();
@@ -850,9 +865,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                 }
 
                 // Always adjust shape with offset so parent views see correct position
-                *shape = shape
-                    .clone()
-                    .with_offset(render_tree.offset() + render_tree.inner.offset);
+                *shape = shape.clone().with_offset(Self::content_origin(render_tree));
             }
 
             return result;
@@ -956,8 +969,18 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
         state: &Self::State,
         focus: Option<&Self::FocusTree>,
     ) -> SeekResult<Self::FocusTree> {
+        let seek = match seek.target {
+            // Content scrolled out of view is not under the point.
+            SeekTarget::At(point) if !render_tree.bounds().contains(&point) => {
+                return SeekResult::Absent;
+            }
+            SeekTarget::At(point) => {
+                seek.with_target(SeekTarget::At(point - Self::content_origin(render_tree)))
+            }
+            _ => *seek,
+        };
         self.inner
-            .seek(seek, render_tree.inner(), &state.inner_state, focus)
+            .seek(&seek, render_tree.inner(), &state.inner_state, focus)
     }
 
     #[expect(clippy::too_many_lines)]

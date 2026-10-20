@@ -104,7 +104,7 @@ impl<F: Font, T: Clone, K: Clone> Clone for TextField<'_, F, T, K> {
             text: self.text.clone(),
             lines: self.lines.clone(),
             line_height: self.line_height,
-            caret: self.caret.clone(),
+            caret: self.caret,
             scrolled: self.scrolled,
             style: self.style.clone(),
         }

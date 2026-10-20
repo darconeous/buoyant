@@ -238,20 +238,28 @@ where
             }
             FocusAction::Teardown => EventResult::Deferred,
             _ => {
-                let is_forward = matches!(
-                    focus_event,
-                    FocusAction::Next | FocusAction::Focus(FocusDirection::Forward)
-                );
-
-                *subfocus = if is_forward {
-                    DefaultFocus::default_first()
+                let is_forward = focus_event.direction() == Some(FocusDirection::Forward);
+                // Focus stays in the overlay.
+                let acquire_direction = if let FocusAction::Toward { .. } = focus_event {
+                    // A directional move never wraps: focus returns to the
+                    // element at the edge it reached.
+                    if is_forward {
+                        FocusDirection::Backward
+                    } else {
+                        FocusDirection::Forward
+                    }
                 } else {
-                    DefaultFocus::default_last()
-                };
-                let acquire_direction = if is_forward {
-                    FocusDirection::Forward
-                } else {
-                    FocusDirection::Backward
+                    // Anything else wraps around to the other end.
+                    *subfocus = if is_forward {
+                        DefaultFocus::default_first()
+                    } else {
+                        DefaultFocus::default_last()
+                    };
+                    if is_forward {
+                        FocusDirection::Forward
+                    } else {
+                        FocusDirection::Backward
+                    }
                 };
                 let result = overlay_view.handle_event(
                     &Event::Focus {
@@ -551,7 +559,7 @@ where
             (SeekTarget::Modal, _) if overlay_focus.is_some() => SeekResult::Current,
             (SeekTarget::Modal | SeekTarget::Any, _) => enter(),
             // Nothing outside an open overlay can be focused.
-            (SeekTarget::Key(_), _) => SeekResult::Blocked,
+            (SeekTarget::Key(_) | SeekTarget::At(_), _) => SeekResult::Blocked,
         }
     }
 

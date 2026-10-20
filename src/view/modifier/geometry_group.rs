@@ -1,7 +1,7 @@
 use crate::{
     environment::LayoutEnvironment,
-    event::{EventResult, TouchResult},
-    focus::{Seek, SeekResult},
+    event::{Event, EventResult, TouchResult},
+    focus::{Seek, SeekResult, SeekTarget},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimensions},
     render::Offset,
@@ -88,6 +88,15 @@ where
         state: &mut Self::State,
         focus: &mut Self::FocusTree,
     ) -> EventResult {
+        // The subtree is laid out from zero: a frame focus moves from is
+        // brought into its coordinates.
+        let event = match event {
+            Event::Focus { action, group } => &Event::Focus {
+                action: action.offset(-render_tree.offset),
+                group: *group,
+            },
+            other => other,
+        };
         self.inner
             .handle_event(
                 event,
@@ -107,7 +116,11 @@ where
         state: &Self::State,
         focus: Option<&Self::FocusTree>,
     ) -> SeekResult<Self::FocusTree> {
-        self.inner.seek(seek, &render_tree.subtree, state, focus)
+        let seek = match seek.target {
+            SeekTarget::At(point) => seek.with_target(SeekTarget::At(point - render_tree.offset)),
+            _ => *seek,
+        };
+        self.inner.seek(&seek, &render_tree.subtree, state, focus)
     }
 
     fn handle_touch(

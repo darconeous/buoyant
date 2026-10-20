@@ -24,6 +24,29 @@ pub enum Event {
     KeyDown(Key),
     /// A key was released.
     KeyUp(Key),
+    /// A [`TextField`](crate::view::TextField) asking the text area in its
+    /// label how the area lays out text. Views pass it on as they do a
+    /// scroll.
+    TextArea(TextAreaQuery),
+}
+
+/// How a text area lays out text, asked for by the
+/// [`TextField`](crate::view::TextField) it belongs to, which edits the text
+/// it shows.
+///
+/// Only Buoyant makes one.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TextAreaQuery {
+    pub(crate) answer: Cell<Option<TextAreaGeometry>>,
+}
+
+/// The answer to a [`TextAreaQuery`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TextAreaGeometry {
+    /// The width of the area.
+    pub(crate) width: u32,
+    /// The width a scroll bar takes from the text, when the text needs one.
+    pub(crate) scroll_bar_room: u32,
 }
 
 /// A key press event.

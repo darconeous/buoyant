@@ -4,7 +4,7 @@
 use buoyant::{
     app::{App, Harness as _},
     event::Key,
-    focus::{FocusKey, FocusState, Role},
+    focus::{Direction, FocusKey, FocusState, Role},
     font::CharacterBufferFont,
     match_view,
     primitives::{Point, Size, geometry::Rectangle},
@@ -78,7 +78,7 @@ where
         .iter()
         .map(|range| tree.text[range.start as usize..range.end as usize].to_owned())
         .collect();
-    (lines, tree.caret.clone())
+    (lines, tree.caret)
 }
 
 fn caret(x: i32, y: i32) -> Rectangle {
@@ -423,4 +423,102 @@ fn the_field_says_when_it_becomes_active_and_inactive() {
     assert!(app.select().is_handled());
     assert!(app.select().is_handled());
     assert_eq!(app.state().activity, [true, false, true, false]);
+}
+
+fn between_buttons(state: &State) -> impl View<(), State> + use<> {
+    VStack::new((
+        Button::new(|_: &mut State| {}, |_| Rectangle)
+            .frame_sized(6, 1)
+            .focus_key(FocusKey(1)),
+        TextField::new(&state.drafts[0], &FONT, |s: &mut State| s.drafts.get_mut(0))
+            .with_max_lines(3)
+            .with_caret_width(1)
+            .on_active(|s: &mut State, active| _ = s.activity.push(active))
+            .focus_key(FocusKey(2)),
+        Button::new(|_: &mut State| {}, |_| Rectangle)
+            .frame_sized(6, 1)
+            .focus_key(FocusKey(3)),
+    ))
+}
+
+#[test]
+fn up_and_down_move_the_cursor_by_line_and_leave_from_the_ends() {
+    let mut state = State::default();
+    // Lines "abcde ", "ab " and "abcde", the cursor before the first 'e'.
+    state.drafts[0] = "abcde ab abcde".into();
+    state.drafts[0].set_cursor(4);
+    let mut app = App::new(state, Size::new(6, 5), between_buttons as fn(&State) -> _)
+        .with_roles(Role::Button | Role::TextEntry);
+    assert_eq!(app.focus_forward().key(), Some(FocusKey(1)));
+    assert_eq!(app.move_toward(Direction::Down).key(), Some(FocusKey(2)));
+    assert!(app.select().is_handled());
+    let cursor = |app: &App<_, State, _>| app.state().drafts[0].cursor();
+
+    // Down through the short line, the cursor keeps to its column.
+    assert!(app.key_down(Key::DownArrow).is_handled());
+    assert_eq!(cursor(&app), 8);
+    assert!(app.key_down(Key::DownArrow).is_handled());
+    assert_eq!(cursor(&app), 13);
+
+    // From the last line, Down is left to focus, which leaves the field;
+    // coming back, the edit resumes where it was.
+    assert!(!app.key_down(Key::DownArrow).is_handled());
+    assert_eq!(app.move_toward(Direction::Down).key(), Some(FocusKey(3)));
+    assert_eq!(app.state().activity, [true, false]);
+    assert_eq!(app.move_toward(Direction::Up).key(), Some(FocusKey(2)));
+    assert_eq!(app.state().activity, [true, false, true]);
+    assert_eq!(cursor(&app), 13);
+
+    // Left and Right move by character, and set the column anew.
+    assert!(app.key_down(Key::UpArrow).is_handled());
+    assert_eq!(cursor(&app), 8);
+    assert!(app.key_down(Key::LeftArrow).is_handled());
+    assert_eq!(cursor(&app), 7);
+    assert!(app.key_down(Key::UpArrow).is_handled());
+    assert_eq!(cursor(&app), 1);
+
+    // From the first line, Up is left to focus.
+    assert!(!app.key_down(Key::UpArrow).is_handled());
+    assert_eq!(app.move_toward(Direction::Up).key(), Some(FocusKey(1)));
+}
+
+/// A field whose text area sits beside a mark, over a background.
+fn marked(state: &Looks) -> impl View<(), Looks> + use<> {
+    TextField::new(&state.draft, &FONT, |s: &mut Looks| Some(&mut s.draft))
+        .with_max_lines(3)
+        .with_caret_width(1)
+        .with_label(|_, area| {
+            HStack::new((Rectangle.frame_sized(1, 1), area))
+                .background(Alignment::Center, Rectangle)
+        })
+}
+
+#[test]
+fn lines_are_those_of_the_text_area_within_the_label() {
+    // Beside the mark, the area is 3 wide: lines "a ", "bc " and "de".
+    // The whole width would make them "a bc " and "de".
+    let mut looks = Looks {
+        draft: "a bc de".into(),
+    };
+    looks.draft.set_cursor(0);
+    let mut app = App::new(looks, Size::new(4, 3), marked).with_roles(Role::TextEntry);
+    assert!(app.focus_forward().is_handled());
+    assert!(app.select().is_handled());
+    assert!(app.key_down(Key::DownArrow).is_handled());
+    assert_eq!(app.state().draft.cursor(), 2);
+    assert!(app.key_down(Key::DownArrow).is_handled());
+    assert_eq!(app.state().draft.cursor(), 5);
+    assert!(!app.key_down(Key::DownArrow).is_handled());
+}
+
+#[test]
+fn a_directional_move_that_leads_nowhere_keeps_the_edit() {
+    let mut app = app("ab", 5, one_field);
+    assert!(app.select().is_handled());
+    assert!(!app.key_down(Key::DownArrow).is_handled());
+    assert!(app.move_toward(Direction::Down).is_handled());
+    app.finalize_view();
+    assert_eq!(shown(&app).1, Some(caret(2, 0)));
+    assert!(app.key_down(Key::Character('c')).is_handled());
+    assert_eq!(app.state().drafts[0].text(), "abc");
 }

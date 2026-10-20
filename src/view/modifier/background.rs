@@ -171,13 +171,15 @@ where
                     }
 
                     // Background exhausted - only move to foreground on forward navigation
-                    match focus_event {
-                        FocusAction::Focus(FocusDirection::Forward) | FocusAction::Next => {
+                    // The layers have no axis, so a directional move is the
+                    // focused layer's alone.
+                    match focus_event.stack_step(None) {
+                        Some(FocusDirection::Forward) if *focus_event != FocusAction::Select => {
                             // Move to foreground
                             let mut foreground_focus = DefaultFocus::default_first();
                             let result = self.foreground.handle_event(
                                 &Event::Focus {
-                                    action: FocusAction::Focus(FocusDirection::Forward),
+                                    action: focus_event.entering(FocusDirection::Forward),
                                     group: *group,
                                 },
                                 context,
@@ -189,11 +191,7 @@ where
                             *focus = BackgroundFocus::Foreground(foreground_focus);
                             result
                         }
-                        FocusAction::Focus(FocusDirection::Backward)
-                        | FocusAction::Previous
-                        | FocusAction::Blur
-                        | FocusAction::Select
-                        | FocusAction::Teardown => EventResult::Deferred,
+                        _ => EventResult::Deferred,
                     }
                 }
                 BackgroundFocus::Foreground(foreground_focus) => {
@@ -211,12 +209,12 @@ where
                     }
 
                     // Foreground exhausted - only move to background on backward navigation
-                    match focus_event {
-                        FocusAction::Focus(FocusDirection::Backward) | FocusAction::Previous => {
+                    match focus_event.stack_step(None) {
+                        Some(FocusDirection::Backward) => {
                             let mut background_focus = DefaultFocus::default_last();
                             let result = self.background.handle_event(
                                 &Event::Focus {
-                                    action: FocusAction::Focus(FocusDirection::Backward),
+                                    action: focus_event.entering(FocusDirection::Backward),
                                     group: *group,
                                 },
                                 context,
@@ -228,11 +226,7 @@ where
                             *focus = BackgroundFocus::Background(background_focus);
                             result
                         }
-                        FocusAction::Focus(FocusDirection::Forward)
-                        | FocusAction::Next
-                        | FocusAction::Select
-                        | FocusAction::Blur
-                        | FocusAction::Teardown => EventResult::Deferred,
+                        _ => EventResult::Deferred,
                     }
                 }
             },
@@ -255,8 +249,8 @@ where
                     foreground_focus,
                 ),
             },
-            // For hit-test events (scroll), perform DFS back to front
-            Event::Scroll(_) => match focus {
+            // For hit-test events (scroll) and queries, perform DFS back to front
+            Event::Scroll(_) | Event::TextArea(_) => match focus {
                 BackgroundFocus::Background(_) => {
                     // Start with background (back)
                     let background_result = self.background.handle_event(

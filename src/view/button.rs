@@ -7,7 +7,7 @@ use embedded_touch::{Phase, Touch};
 use crate::{
     environment::LayoutEnvironment,
     event::{Event, EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusAction, Role, Seek, SeekResult, SeekTarget},
+    focus::{DefaultFocus, FocusAction, Role, RoleSet, Seek, SeekResult, SeekTarget},
     layout::ResolvedLayout,
     primitives::ProposedDimensions,
     render::IntrinsicShape,
@@ -115,6 +115,7 @@ pub struct Button<ViewFn, Inner, Action> {
     _inner_marker: PhantomData<Inner>,
     view: ViewFn,
     action: Action,
+    role: Role,
 }
 
 impl<ViewFn, Inner: ViewMarker, Action> Button<ViewFn, Inner, Action> {
@@ -127,7 +128,23 @@ impl<ViewFn, Inner: ViewMarker, Action> Button<ViewFn, Inner, Action> {
             view,
             action,
             _inner_marker: PhantomData,
+            role: Role::Button,
         }
+    }
+
+    /// Takes focus with `role` instead of [`Button`](Role::Button).
+    ///
+    /// With [`Pointer`](Role::Pointer), the button is for touch alone: focus
+    /// navigation passes over it, and a tap runs its action without moving
+    /// focus.
+    #[must_use]
+    pub fn with_role(self, role: Role) -> Self {
+        Self { role, ..self }
+    }
+
+    /// Whether focus can land on the button, for the roles allowed.
+    fn focusable(&self, roles: RoleSet) -> bool {
+        self.role != Role::Pointer && roles.contains(self.role)
     }
 }
 
@@ -209,7 +226,7 @@ where
                 action: focus_event,
                 ..
             } => {
-                if !context.roles.contains(Role::Button) {
+                if !self.focusable(context.roles) {
                     return EventResult::Deferred;
                 }
                 context.request_redraw();
@@ -221,12 +238,15 @@ where
                         context.request_view_rebuild();
                         EventResult::handled_unfocused()
                     }
-                    FocusAction::Blur | FocusAction::Next | FocusAction::Previous => {
+                    FocusAction::Blur
+                    | FocusAction::Next
+                    | FocusAction::Previous
+                    | FocusAction::Toward { .. } => {
                         state.0.is_focused = false;
                         context.request_view_rebuild();
                         EventResult::Deferred
                     }
-                    FocusAction::Focus(_) => {
+                    FocusAction::Focus(_) | FocusAction::Enter { .. } => {
                         if !state.0.is_focused {
                             context.request_view_rebuild();
                         }
@@ -248,12 +268,16 @@ where
     fn seek(
         &self,
         seek: &Seek,
-        _render_tree: &Self::Renderables,
+        render_tree: &Self::Renderables,
         _state: &Self::State,
         _focus: Option<&Self::FocusTree>,
     ) -> SeekResult<Self::FocusTree> {
+        if !self.focusable(seek.roles) {
+            return SeekResult::Absent;
+        }
         match seek.target {
-            SeekTarget::Any if seek.roles.contains(Role::Button) => {
+            SeekTarget::Any => SeekResult::found(DefaultFocus::default_first()),
+            SeekTarget::At(point) if render_tree.content_shape().contains(point) => {
                 SeekResult::found(DefaultFocus::default_first())
             }
             _ => SeekResult::Absent,
@@ -295,6 +319,9 @@ where
                     let content_shape = render_tree.content_shape();
                     if content_shape.contains(point) {
                         (self.action)(captures);
+                        if self.role == Role::Pointer {
+                            return TouchResult::Handled;
+                        }
                         return TouchResult::Focused(Inner::FocusTree::default_first());
                     }
                     return TouchResult::Handled;

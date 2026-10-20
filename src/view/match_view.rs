@@ -2,7 +2,7 @@ use embedded_touch::Touch;
 
 use crate::{
     event::{EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusAction, FocusDirection, Seek, SeekResult},
+    focus::{DefaultFocus, FocusDirection, Seek, SeekResult},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimensions},
     render,
@@ -486,8 +486,8 @@ macro_rules! define_branch {
                     (Self::$variant(v), render::$name::$variant(t), $name::$variant(s)) => {
                         if let Event::Focus { action: focus_event, .. } = event {
                             let inner_focus = paste::paste! {
-                                match focus_event {
-                                    FocusAction::Focus(FocusDirection::Backward) | FocusAction::Previous => {
+                                match focus_event.direction() {
+                                    Some(FocusDirection::Backward) => {
                                         focus.[< $variant:lower _or_init >](DefaultFocus::default_last())
                                     }
                                     _ => {
