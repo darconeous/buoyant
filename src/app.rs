@@ -19,7 +19,7 @@ use crate::{
     render_target::{RenderTarget, SolidBrush, Stroke},
     view::{View, ViewLayout},
 };
-use embedded_touch::{Phase, Touch};
+use embedded_touch::{Phase, Tool, Touch};
 
 mod harness;
 pub use harness::Harness;
@@ -70,6 +70,8 @@ where
     /// A touch cancelled while in progress, until it ends.
     cancelled: Option<u8>,
     roles: RoleSet,
+    /// The size touch targets are touched as being at least.
+    min_touch_target: Size,
     size: Size,
     elapsed: Duration,
     requires_redraw: bool,
@@ -149,6 +151,7 @@ where
             redirecting: false,
             touch: None,
             cancelled: None,
+            min_touch_target: Size::zero(),
             size,
             elapsed: Duration::default(),
             requires_redraw: true,
@@ -187,6 +190,7 @@ where
                 touch: _,
                 cancelled: _,
                 roles: _,
+                min_touch_target: _,
                 size: _,
                 elapsed: _,
                 requires_redraw: _,
@@ -224,6 +228,7 @@ where
             (&raw mut (*app).touch).write(None);
             (&raw mut (*app).cancelled).write(None);
             (&raw mut (*app).roles).write(Role::Button | Role::Container);
+            (&raw mut (*app).min_touch_target).write(Size::zero());
             (&raw mut (*app).size).write(size);
             (&raw mut (*app).elapsed).write(Duration::default());
             (&raw mut (*app).requires_redraw).write(true);
@@ -246,6 +251,27 @@ where
     /// [`with_roles`](Self::with_roles) does.
     pub fn set_roles(&mut self, roles: impl Into<RoleSet>) {
         self.roles = roles.into();
+    }
+
+    /// Touches targets smaller than `size`, such as small buttons, as if
+    /// they were grown to it around their centers, as Jetpack Compose's
+    /// minimum touch target does. Layout and drawing are unchanged.
+    ///
+    /// A touch in a target's own area goes to that target; one that starts
+    /// only in grown areas goes to the nearest of them. Touches from a
+    /// pointer, such as a mouse, are precise and grow nothing. Off by
+    /// default.
+    #[must_use]
+    pub fn with_min_touch_target(mut self, size: Size) -> Self {
+        self.set_min_touch_target(size);
+        self
+    }
+
+    /// Sets the minimum touch target, as
+    /// [`with_min_touch_target`](Self::with_min_touch_target) does. A zero
+    /// size turns it off.
+    pub fn set_min_touch_target(&mut self, size: Size) {
+        self.min_touch_target = size;
     }
 
     /// Initializes the focus tree to the last element.
@@ -737,13 +763,30 @@ where
             Phase::Ended | Phase::Cancelled if in_progress == Some(touch.id) => self.touch = None,
             _ => {}
         }
-        let context = EventContext::new(self.elapsed).with_roles(self.roles);
-        let target_tree = self.trees.target_mut();
+        let min_touch_target = match touch.tool {
+            Tool::Pointer { .. } => Size::zero(),
+            Tool::Finger | Tool::Stylus { .. } => self.min_touch_target,
+        };
+        let context = EventContext::new(self.elapsed)
+            .with_roles(self.roles)
+            .with_min_touch_target(min_touch_target);
 
+        // A starting touch is first followed to where it lands, so that one
+        // landing on no target but near one goes to that target.
+        if touch.phase == Phase::Started && context.begin_touch_probe() {
+            _ = self.view.handle_touch(
+                touch,
+                &context,
+                self.trees.target_mut(),
+                &mut self.state,
+                &mut self.view_state,
+            );
+            context.end_touch_probe();
+        }
         let result = self.view.handle_touch(
             touch,
             &context,
-            target_tree,
+            self.trees.target_mut(),
             &mut self.state,
             &mut self.view_state,
         );

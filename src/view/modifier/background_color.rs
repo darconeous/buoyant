@@ -174,12 +174,10 @@ where
                 // background shape, claim it so it does not fall through.
                 // Uses the shape bounding box only because precise shape intersection doesn't exist yet.
                 if touch.phase == Phase::Started
-                    && render_tree
-                        .0
-                        .subtree
-                        .as_shape()
-                        .bounding_box()
-                        .contains(&touch.location.into())
+                    && context.touch_starts_over(
+                        render_tree.0.subtree.as_shape().bounding_box(),
+                        touch.location.into(),
+                    )
                 {
                     TouchResult::Handled
                 } else {

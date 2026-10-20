@@ -805,15 +805,15 @@ where
             return TouchResult::Deferred;
         }
         let point = touch.location.into();
-        let inside = render_tree.content_shape().contains(point);
+        let area = render_tree.content_shape();
         match touch.phase {
-            Phase::Started if inside => {
+            Phase::Started if context.touch_starts_on(&area, point) => {
                 state.touch = Some(touch.id);
                 TouchResult::Handled
             }
             Phase::Moved if state.touch.is_some() => TouchResult::Handled,
             Phase::Ended if state.touch.take().is_some() => {
-                if inside {
+                if context.touch_is_over(&area, point) {
                     self.tap(point, context, render_tree, captures, state)
                 } else {
                     TouchResult::Handled

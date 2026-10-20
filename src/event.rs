@@ -2,7 +2,7 @@ use core::{cell::Cell, time::Duration};
 
 use crate::{
     focus::{self, FocusAction, FocusGroup, FocusKey, RoleSet},
-    primitives::Point,
+    primitives::{Point, Size, geometry::Rectangle},
     render::ContentShape,
 };
 
@@ -258,6 +258,98 @@ pub struct EventContext {
     pub redirect_requested: Cell<bool>,
     /// Which roles are currently active.
     pub roles: RoleSet,
+    /// How a touch finds a target smaller than the minimum touch target.
+    pub(crate) touch_targets: TouchTargets,
+}
+
+/// Hit testing against a minimum touch target, as Jetpack Compose does it.
+///
+/// A target smaller than the minimum is touched as if it were grown to it
+/// around its center, without changing its layout. A touch that starts in a
+/// target's own area always goes to that target. Only a touch that starts on
+/// no target goes to the nearest one whose grown area holds it.
+///
+/// A starting touch first goes through the view in a probe, which changes
+/// nothing and only finds where the touch lands. It then goes through again
+/// to be handled: as usual, or by the nearest target alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TouchTargets {
+    /// The size every target is touched as being at least. Zero grows none.
+    minimum: Size,
+    /// The pass a starting touch is in.
+    pass: Cell<HitPass>,
+    /// How many targets have been asked in this pass.
+    asked: Cell<u16>,
+    /// A target was touched in its own area.
+    direct: Cell<bool>,
+    /// The nearest target whose grown area holds the touch: its squared
+    /// distance from the touch, and its place in the order targets are asked.
+    nearest: Cell<Option<(u64, u16)>>,
+    /// The first view hiding what is behind it that the touch landed on.
+    cover: Cell<Option<Rectangle>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HitPass {
+    /// The touch is handled as usual.
+    Direct,
+    /// Nothing takes the touch; targets note where it landed.
+    Probe,
+    /// The nearest target alone takes the touch.
+    Near,
+}
+
+impl TouchTargets {
+    /// `area` grown symmetrically to the minimum, where it is smaller.
+    fn grown(&self, area: Rectangle) -> Rectangle {
+        let grow_x = self.minimum.width.saturating_sub(area.size.width);
+        let grow_y = self.minimum.height.saturating_sub(area.size.height);
+        Rectangle::new(
+            area.origin - Point::new((grow_x / 2) as i32, (grow_y / 2) as i32),
+            Size::new(area.size.width + grow_x, area.size.height + grow_y),
+        )
+    }
+
+    /// The squared distance from `point` to `area`, when the grown area holds
+    /// `point`.
+    fn distance(&self, area: Rectangle, point: Point) -> Option<u64> {
+        if !self.grown(area).contains(&point) {
+            return None;
+        }
+        let dx = (area.origin.x - point.x)
+            .max(point.x - (area.x_end() - 1))
+            .max(0);
+        let dy = (area.origin.y - point.y)
+            .max(point.y - (area.y_end() - 1))
+            .max(0);
+        Some(u64::from(dx.unsigned_abs()).pow(2) + u64::from(dy.unsigned_abs()).pow(2))
+    }
+
+    /// Notes, in the probe, where a touch at `point` lands on a target in
+    /// `area`.
+    fn probe(&self, area: &ContentShape, point: Point, index: u16) {
+        let Some(bounds) = area.bounding_box() else {
+            return;
+        };
+        // A target that a view landed on before hides is behind it.
+        if self
+            .cover
+            .get()
+            .is_some_and(|cover| cover.intersects(&bounds))
+        {
+            return;
+        }
+        if area.contains(point) {
+            self.direct.set(true);
+        } else if let Some(distance) = self.distance(bounds, point)
+            && self
+                .nearest
+                .get()
+                .is_none_or(|(nearest, _)| distance < nearest)
+        {
+            self.nearest.set(Some((distance, index)));
+        }
+    }
 }
 
 impl EventContext {
@@ -270,6 +362,14 @@ impl EventContext {
             view_rebuild_requested: Cell::new(false),
             redirect_requested: Cell::new(false),
             roles: RoleSet::any(),
+            touch_targets: TouchTargets {
+                minimum: Size::zero(),
+                pass: Cell::new(HitPass::Direct),
+                asked: Cell::new(0),
+                direct: Cell::new(false),
+                nearest: Cell::new(None),
+                cover: Cell::new(None),
+            },
         }
     }
 
@@ -277,6 +377,107 @@ impl EventContext {
     pub fn with_roles(mut self, roles: impl Into<RoleSet>) -> Self {
         self.roles = roles.into();
         self
+    }
+
+    /// Touches targets smaller than `size` as if they were grown to it.
+    ///
+    /// See [`touch_starts_on`](Self::touch_starts_on).
+    #[must_use]
+    pub fn with_min_touch_target(mut self, size: Size) -> Self {
+        self.touch_targets.minimum = size;
+        self
+    }
+
+    /// Whether a touch starting at `point` goes to the target touched in
+    /// `area`, such as a button. Asked once of each target a starting touch
+    /// reaches.
+    ///
+    /// A target smaller than the minimum touch target is touched as if it
+    /// were grown to it around its center. A touch in a target's own area
+    /// goes to it; one only in grown areas goes to the nearest of those
+    /// targets.
+    pub fn touch_starts_on(&self, area: &ContentShape, point: Point) -> bool {
+        let targets = &self.touch_targets;
+        let index = targets.asked.get();
+        targets.asked.set(index.saturating_add(1));
+        match targets.pass.get() {
+            HitPass::Direct => area.contains(point),
+            HitPass::Probe => {
+                targets.probe(area, point, index);
+                false
+            }
+            HitPass::Near => targets
+                .nearest
+                .get()
+                .is_some_and(|(_, nearest)| nearest == index),
+        }
+    }
+
+    /// Whether `point` is over the target touched in `area`, for a touch
+    /// that started on it: in its own area, or in the area it is grown to.
+    #[must_use]
+    pub fn touch_is_over(&self, area: &ContentShape, point: Point) -> bool {
+        area.contains(point)
+            || area
+                .bounding_box()
+                .is_some_and(|area| self.touch_targets.grown(area).contains(&point))
+    }
+
+    /// Whether a view that takes a touch starting at `point` in `area` only
+    /// so that nothing behind it is touched, such as a shape, takes it.
+    ///
+    /// Such a view is not a target: a touch on it still reaches a small
+    /// target beside it, though not one behind it.
+    pub fn touch_starts_over(&self, area: Rectangle, point: Point) -> bool {
+        let targets = &self.touch_targets;
+        match targets.pass.get() {
+            HitPass::Direct => area.contains(&point),
+            HitPass::Probe => {
+                if area.contains(&point) && targets.cover.get().is_none() {
+                    targets.cover.set(Some(area));
+                }
+                false
+            }
+            HitPass::Near => false,
+        }
+    }
+
+    /// Tells that a touch started in a view that takes touches anywhere in
+    /// it, such as a scroll view, outranking any target outside it that the
+    /// touch is only near. Targets inside it are asked afterwards.
+    pub fn touch_starts_in(&self) {
+        let targets = &self.touch_targets;
+        if targets.pass.get() == HitPass::Probe && !targets.direct.get() {
+            targets.nearest.set(None);
+        }
+    }
+
+    /// Whether this is the probe that finds where a starting touch lands, in
+    /// which a view must change nothing.
+    #[must_use]
+    pub fn is_touch_probe(&self) -> bool {
+        self.touch_targets.pass.get() == HitPass::Probe
+    }
+
+    /// Whether a starting touch should be probed first: when targets grow.
+    pub(crate) fn begin_touch_probe(&self) -> bool {
+        let targets = &self.touch_targets;
+        let probe = targets.minimum.width > 0 || targets.minimum.height > 0;
+        if probe {
+            targets.pass.set(HitPass::Probe);
+        }
+        probe
+    }
+
+    /// Ends the probe: the touch is then handled by the nearest target alone
+    /// if it landed on no target but near one, and as usual otherwise.
+    pub(crate) fn end_touch_probe(&self) {
+        let targets = &self.touch_targets;
+        let near = !targets.direct.get() && targets.nearest.get().is_some();
+        targets
+            .pass
+            .set(if near { HitPass::Near } else { HitPass::Direct });
+        targets.asked.set(0);
     }
 
     /// Indicates to the render loop that the view needs to be rebuilt.

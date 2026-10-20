@@ -3,7 +3,7 @@
 
 use core::marker::PhantomData;
 
-use embedded_touch::Touch;
+use embedded_touch::{Phase, Touch};
 
 use crate::{
     environment::LayoutEnvironment,
@@ -309,7 +309,13 @@ where
         _captures: &mut C,
         state: &mut Self::State,
     ) -> TouchResult<Self::FocusTree> {
-        if render_tree.content_shape().contains(touch.location.into()) {
+        let (area, point) = (render_tree.content_shape(), touch.location.into());
+        let on = if touch.phase == Phase::Started {
+            context.touch_starts_on(&area, point)
+        } else {
+            context.touch_is_over(&area, point)
+        };
+        if on {
             // Just move focus to this element on touch for now, but we could maybe
             // also support dragging or scroll events.
             match state.0 {

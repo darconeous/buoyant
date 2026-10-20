@@ -617,6 +617,11 @@ where
             && let TransitionOption::Some { subtree, .. } = &mut render_tree.1.subtree
         {
             let inside = subtree.content_shape().contains(touch.location.into());
+            // A starting touch is a new one, even with the id of one whose
+            // end was lost.
+            if touch.phase == Phase::Started {
+                state.outside_touch = None;
+            }
             if state.outside_touch == Some(touch.id) {
                 return match touch.phase {
                     Phase::Ended => {
@@ -631,16 +636,18 @@ where
                         state.outside_touch = None;
                         TouchResult::Handled
                     }
-                    Phase::Started => {
-                        state.outside_touch = (!inside).then_some(touch.id);
-                        TouchResult::Handled
-                    }
-                    Phase::Moved | Phase::Hovering(_) => TouchResult::Handled,
+                    Phase::Started | Phase::Moved | Phase::Hovering(_) => TouchResult::Handled,
                 };
             }
             let overlay_state = state
                 .overlay_state
                 .get_or_insert_with(|| overlay_view.build_state(captures));
+            if context.is_touch_probe() {
+                // The overlay outranks small targets outside it.
+                context.touch_starts_in();
+                _ = overlay_view.handle_touch(touch, context, subtree, captures, overlay_state);
+                return TouchResult::Handled;
+            }
             return match overlay_view.handle_touch(touch, context, subtree, captures, overlay_state)
             {
                 TouchResult::Focused(f) => TouchResult::Focused(FocusTree {

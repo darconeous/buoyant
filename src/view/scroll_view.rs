@@ -1132,6 +1132,24 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
         let (result, delta) = match touch.phase {
             Phase::Started => {
                 let bounds = render_tree.bounds();
+                if bounds.contains(&point) {
+                    // Touched anywhere in it, the scroll view outranks small
+                    // targets outside that the touch is only near.
+                    context.touch_starts_in();
+                    if context.is_touch_probe() {
+                        // Flung content takes the touch for the scroll view.
+                        if !render_tree.glide.is_coasting(context.app_time) {
+                            _ = self.inner.handle_touch(
+                                &Self::content_touch(touch, render_tree),
+                                context,
+                                render_tree.inner_mut(),
+                                captures,
+                                &mut state.inner_state,
+                            );
+                        }
+                        return TouchResult::Handled;
+                    }
+                }
                 if bounds.contains(&point) && render_tree.glide.is_coasting(context.app_time) {
                     // A touch on flung content stops it where it is, and
                     // drags it from there: it is for the scroll view alone.

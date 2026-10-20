@@ -303,7 +303,7 @@ where
         let point = touch.location.into();
         match touch.phase {
             Phase::Started => {
-                if render_tree.content_shape().contains(point) {
+                if context.touch_starts_on(&render_tree.content_shape(), point) {
                     state.0.touch = ButtonTouchState::CaptivePressed(touch.id);
                     // TODO: I think we could maybe just recompute the tiny button render
                     // tree here and avoid recomputing the view.
@@ -316,8 +316,7 @@ where
                 if state.0.touch != ButtonTouchState::AtRest {
                     state.0.touch = ButtonTouchState::AtRest;
                     context.request_view_rebuild();
-                    let content_shape = render_tree.content_shape();
-                    if content_shape.contains(point) {
+                    if context.touch_is_over(&render_tree.content_shape(), point) {
                         (self.action)(captures);
                         if self.role == Role::Pointer {
                             return TouchResult::Handled;
@@ -328,7 +327,10 @@ where
                 }
             }
             Phase::Moved => {
-                match (render_tree.content_shape().contains(point), state.0.touch) {
+                match (
+                    context.touch_is_over(&render_tree.content_shape(), point),
+                    state.0.touch,
+                ) {
                     (true, ButtonTouchState::Captive(touch_id)) => {
                         state.0.touch = ButtonTouchState::CaptivePressed(touch_id);
                         // TODO: Same here...
