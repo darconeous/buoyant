@@ -43,10 +43,16 @@ pub struct TextAreaQuery {
 /// The answer to a [`TextAreaQuery`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TextAreaGeometry {
+    /// Where the area is.
+    pub(crate) origin: Point,
     /// The width of the area.
     pub(crate) width: u32,
     /// The width a scroll bar takes from the text, when the text needs one.
     pub(crate) scroll_bar_room: u32,
+    /// The height of a line.
+    pub(crate) line_height: u32,
+    /// The first line shown.
+    pub(crate) first_line: u16,
 }
 
 /// A key press event.

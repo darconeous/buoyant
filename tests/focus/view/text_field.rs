@@ -522,3 +522,64 @@ fn a_directional_move_that_leads_nowhere_keeps_the_edit() {
     assert!(app.key_down(Key::Character('c')).is_handled());
     assert_eq!(app.state().drafts[0].text(), "abc");
 }
+
+#[test]
+fn a_tap_places_the_cursor_and_starts_editing() {
+    let mut state = State::default();
+    // Lines "abcde ", "ab " and "abcde", on rows 1 to 3.
+    state.drafts[0] = "abcde ab abcde".into();
+    let mut app = App::new(state, Size::new(6, 5), between_buttons as fn(&State) -> _)
+        .with_roles(Role::Button | Role::TextEntry);
+    assert_eq!(app.focus_forward().key(), Some(FocusKey(1)));
+    let cursor = |app: &App<_, State, _>| app.state().drafts[0].cursor();
+
+    // From the button, a tap after the 'a' of "ab" focuses the field and
+    // edits there.
+    app.tap(Point::new(1, 2));
+    assert_eq!(app.focused_key(), Some(FocusKey(2)));
+    assert_eq!(app.state().activity, [true]);
+    assert_eq!(cursor(&app), 7);
+    assert!(app.key_down(Key::Character('x')).is_handled());
+    assert_eq!(app.state().drafts[0].text(), "abcde axb abcde");
+
+    // While editing, a tap only moves the cursor. Past the end of a line, it
+    // goes to the end.
+    app.tap(Point::new(5, 3));
+    assert_eq!(cursor(&app), 15);
+    assert_eq!(app.state().activity, [true]);
+
+    // Focused but not editing, a tap starts the edit again.
+    assert!(app.select().is_handled());
+    assert_eq!(app.state().activity, [true, false]);
+    app.tap(Point::new(0, 1));
+    assert_eq!(cursor(&app), 0);
+    assert_eq!(app.state().activity, [true, false, true]);
+}
+
+#[test]
+fn a_touch_that_leaves_the_field_does_not_tap_it() {
+    let mut app = app("ab", 5, reporting);
+    app.drag(Point::new(1, 0), Point::new(8, 0));
+    assert!(app.state().activity.is_empty());
+    app.drag(Point::new(1, 0), Point::new(2, 0));
+    assert_eq!(app.state().activity, [true]);
+}
+
+#[test]
+fn a_tap_on_a_scrolled_field_counts_the_lines_above() {
+    // Lines "ab ", "cd ", "ef " and "gh": with the cursor at the end, the
+    // three shown are the last three.
+    let mut app = app("ab cd ef gh", 3, one_field);
+    assert!(app.select().is_handled());
+    app.finalize_view();
+    assert_eq!(shown(&app).0, ["cd ", "ef ", "gh"]);
+    app.tap(Point::new(1, 0));
+    assert_eq!(app.state().drafts[0].cursor(), 4);
+}
+
+#[test]
+fn a_tap_is_left_to_the_views_around_without_the_text_entry_role() {
+    let mut app = App::new(State::default(), Size::new(5, 4), reporting).with_roles(Role::Button);
+    app.tap(Point::new(1, 0));
+    assert!(app.state().activity.is_empty());
+}

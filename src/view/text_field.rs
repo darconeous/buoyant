@@ -2,7 +2,7 @@
 
 use core::ops::Range;
 
-use embedded_touch::Touch;
+use embedded_touch::{Phase, Touch};
 
 use crate::{
     environment::LayoutEnvironment,
@@ -340,27 +340,64 @@ fn line_move(
     let target = if down { line + 1 } else { line.checked_sub(1)? };
     let mut lines = EditLines::new(text, wrap, metrics).skip(target).peekable();
     let range = lines.next()?;
-    // A cursor at a break begins the next line, so only the last line holds
-    // its end.
     let last = lines.peek().is_none();
-    let mut best = (range.start, goal);
-    let mut x = 0;
+    Some((column_at(text, range, last, goal, metrics), goal))
+}
+
+/// Where the cursor goes on `line` of text wrapped at `wrap`, as near across
+/// it as `x`. A line past the last is the last.
+fn offset_at(text: &str, wrap: u32, metrics: &impl FontMetrics, line: usize, x: u32) -> usize {
+    let mut lines = EditLines::new(text, wrap, metrics).peekable();
+    let mut index = 0;
+    while let Some(range) = lines.next() {
+        let last = lines.peek().is_none();
+        if index == line || last {
+            return column_at(text, range, last, x, metrics);
+        }
+        index += 1;
+    }
+    0
+}
+
+/// The cursor in the line at `range` nearest `x` across it. A cursor at a
+/// break begins the next line, so only the `last` line holds its end.
+fn column_at(
+    text: &str,
+    range: Range<usize>,
+    last: bool,
+    x: u32,
+    metrics: &impl FontMetrics,
+) -> usize {
+    let mut best = (range.start, x);
+    let mut across = 0;
     for (offset, c) in text[range.clone()].char_indices() {
         if c == '\n' {
             break;
         }
-        x += metrics.advance(c);
+        across += metrics.advance(c);
         let index = range.start + offset + c.len_utf8();
         if index == range.end && !last {
             break;
         }
-        let distance = x.abs_diff(goal);
+        let distance = across.abs_diff(x);
         if distance >= best.1 {
             break;
         }
         best = (index, distance);
     }
-    Some((best.0, goal))
+    best.0
+}
+
+/// What a [`TextField`] keeps while it is shown.
+#[derive(Debug, Clone)]
+pub struct FieldState<S> {
+    status: TextFieldStatus,
+    /// The label's state.
+    label: S,
+    /// Where the cursor heads across lines.
+    goal: Option<LineGoal>,
+    /// The touch that started on the field, until it ends.
+    touch: Option<u8>,
 }
 
 /// Where the cursor heads across lines: kept while it moves up and down, so
@@ -634,9 +671,7 @@ where
     ViewFn: Fn(TextFieldStatus, TextArea<'a, B, F>) -> Inner,
     Inner: ViewLayout<C, Renderables: IntrinsicShape>,
 {
-    /// The field's status, its label's state, and where the cursor heads
-    /// across lines.
-    type State = (TextFieldStatus, Inner::State, Option<LineGoal>);
+    type State = FieldState<Inner::State>;
     type Sublayout = ResolvedLayout<Inner::Sublayout>;
     type FocusTree = ();
 
@@ -646,8 +681,13 @@ where
 
     fn build_state(&self, captures: &mut C) -> Self::State {
         let status = TextFieldStatus::default();
-        let inner = (self.label)(status, self.area(status)).build_state(captures);
-        (status, inner, None)
+        let label = (self.label)(status, self.area(status)).build_state(captures);
+        FieldState {
+            status,
+            label,
+            goal: None,
+            touch: None,
+        }
     }
 
     fn layout(
@@ -657,8 +697,12 @@ where
         captures: &mut C,
         state: &mut Self::State,
     ) -> ResolvedLayout<Self::Sublayout> {
-        let inner =
-            (self.label)(state.0, self.area(state.0)).layout(offer, env, captures, &mut state.1);
+        let inner = (self.label)(state.status, self.area(state.status)).layout(
+            offer,
+            env,
+            captures,
+            &mut state.label,
+        );
         ResolvedLayout {
             resolved_size: inner.resolved_size,
             sublayouts: inner,
@@ -673,12 +717,12 @@ where
         captures: &mut C,
         state: &mut Self::State,
     ) -> Self::Renderables {
-        (self.label)(state.0, self.area(state.0)).render_tree(
+        (self.label)(state.status, self.area(state.status)).render_tree(
             &layout.sublayouts,
             origin,
             env,
             captures,
-            &mut state.1,
+            &mut state.label,
         )
     }
 
@@ -691,23 +735,23 @@ where
         state: &mut Self::State,
         _focus: &mut Self::FocusTree,
     ) -> EventResult {
-        let was_active = state.0.active;
+        let was_active = state.status.active;
         let result = match event {
             Event::Focus { action, .. } => {
                 if !context.roles.contains(Role::TextEntry) {
                     return EventResult::Deferred;
                 }
-                state.2 = None;
+                state.goal = None;
                 self.handle_focus(
                     *action,
                     context,
                     captures,
-                    &mut state.0,
+                    &mut state.status,
                     render_tree.content_shape(),
                 )
             }
             Event::KeyDown(key @ (Key::UpArrow | Key::DownArrow))
-                if state.0.focused && state.0.active =>
+                if state.status.focused && state.status.active =>
             {
                 self.move_line(
                     *key == Key::DownArrow,
@@ -717,14 +761,14 @@ where
                     state,
                 )
             }
-            Event::KeyDown(key) if state.0.focused => {
-                state.2 = None;
-                self.handle_key(*key, context, captures, &mut state.0)
+            Event::KeyDown(key) if state.status.focused => {
+                state.goal = None;
+                self.handle_key(*key, context, captures, &mut state.status)
             }
             _ => EventResult::Deferred,
         };
-        if state.0.active != was_active {
-            self.on_active.on_active(captures, state.0.active);
+        if state.status.active != was_active {
+            self.on_active.on_active(captures, state.status.active);
         }
         result
     }
@@ -750,13 +794,34 @@ where
 
     fn handle_touch(
         &self,
-        _touch: &Touch,
-        _context: &EventContext,
-        _render_tree: &mut Self::Renderables,
-        _captures: &mut C,
-        _state: &mut Self::State,
+        touch: &Touch,
+        context: &EventContext,
+        render_tree: &mut Self::Renderables,
+        captures: &mut C,
+        state: &mut Self::State,
     ) -> TouchResult<Self::FocusTree> {
-        TouchResult::Deferred
+        if !context.roles.contains(Role::TextEntry) || state.touch.is_some_and(|id| id != touch.id)
+        {
+            return TouchResult::Deferred;
+        }
+        let point = touch.location.into();
+        let inside = render_tree.content_shape().contains(point);
+        match touch.phase {
+            Phase::Started if inside => {
+                state.touch = Some(touch.id);
+                TouchResult::Handled
+            }
+            Phase::Moved if state.touch.is_some() => TouchResult::Handled,
+            Phase::Ended if state.touch.take().is_some() => {
+                if inside {
+                    self.tap(point, context, render_tree, captures, state)
+                } else {
+                    TouchResult::Handled
+                }
+            }
+            Phase::Cancelled if state.touch.take().is_some() => TouchResult::Handled,
+            _ => TouchResult::Deferred,
+        }
     }
 }
 
@@ -833,26 +898,15 @@ impl<'a, B: EditText, F: Font, L, S, ViewFn, A> TextField<'a, B, F, L, S, ViewFn
         context: &EventContext,
         render_tree: &mut Inner::Renderables,
         captures: &mut C,
-        state: &mut (TextFieldStatus, Inner::State, Option<LineGoal>),
+        state: &mut FieldState<Inner::State>,
     ) -> EventResult
     where
         L: Fn(&mut C) -> Option<&mut EditBuffer<B>>,
         ViewFn: Fn(TextFieldStatus, TextArea<'a, B, F>) -> Inner,
         Inner: ViewLayout<C>,
     {
-        let query = Event::TextArea(TextAreaQuery::default());
-        _ = (self.label)(state.0, self.area(state.0)).handle_event(
-            &query,
-            context,
-            render_tree,
-            captures,
-            &mut state.1,
-            &mut DefaultFocus::default_first(),
-        );
-        let Event::TextArea(query) = query else {
-            unreachable!();
-        };
-        let (Some(area), Some(buffer)) = (query.answer.get(), (self.lens)(captures)) else {
+        let area = self.area_geometry(context, render_tree, captures, state);
+        let (Some(area), Some(buffer)) = (area, (self.lens)(captures)) else {
             return EventResult::Deferred;
         };
         let metrics = self.font.metrics(&self.attributes);
@@ -865,19 +919,95 @@ impl<'a, B: EditText, F: Font, L, S, ViewFn, A> TextField<'a, B, F, L, S, ViewFn
             &metrics,
         );
         let goal = state
-            .2
+            .goal
             .filter(|goal| goal.cursor == buffer.cursor())
             .map(|goal| goal.x);
         let Some((cursor, x)) = line_move(text, buffer.cursor(), wrap, &metrics, down, goal) else {
             return EventResult::Deferred;
         };
         buffer.set_cursor(cursor);
-        state.2 = Some(LineGoal {
+        state.goal = Some(LineGoal {
             cursor: buffer.cursor(),
             x,
         });
         context.request_view_rebuild();
         EventResult::handled_unfocused()
+    }
+
+    /// A tap on the field at `point`: the cursor goes where the text was
+    /// tapped, and the field is edited, taking focus if it has none.
+    fn tap<C: ?Sized, Inner>(
+        &self,
+        point: Point,
+        context: &EventContext,
+        render_tree: &mut Inner::Renderables,
+        captures: &mut C,
+        state: &mut FieldState<Inner::State>,
+    ) -> TouchResult<()>
+    where
+        L: Fn(&mut C) -> Option<&mut EditBuffer<B>>,
+        A: OnActive<C>,
+        ViewFn: Fn(TextFieldStatus, TextArea<'a, B, F>) -> Inner,
+        Inner: ViewLayout<C>,
+    {
+        let area = self.area_geometry(context, render_tree, captures, state);
+        if let (Some(area), Some(buffer)) = (area, (self.lens)(captures)) {
+            let metrics = self.font.metrics(&self.attributes);
+            let text = buffer.text();
+            let wrap = wrap_width(
+                text,
+                area.width,
+                area.scroll_bar_room,
+                self.max_lines,
+                &metrics,
+            );
+            let within = point - area.origin;
+            let line = usize::from(area.first_line)
+                + (within.y.max(0) as u32 / area.line_height.max(1)) as usize;
+            let cursor = offset_at(text, wrap, &metrics, line, within.x.max(0) as u32);
+            buffer.set_cursor(cursor);
+        }
+        state.goal = None;
+        context.request_view_rebuild();
+        if state.status.focused {
+            if !state.status.active {
+                state.status.active = true;
+                self.on_active.on_active(captures, true);
+            }
+            TouchResult::Handled
+        } else {
+            // Focus moves here, and editing begins as it arrives.
+            state.status.resume = true;
+            TouchResult::Focused(())
+        }
+    }
+
+    /// How the text area in the label lays out text, as it answers a
+    /// [`TextAreaQuery`].
+    fn area_geometry<C: ?Sized, Inner>(
+        &self,
+        context: &EventContext,
+        render_tree: &mut Inner::Renderables,
+        captures: &mut C,
+        state: &mut FieldState<Inner::State>,
+    ) -> Option<TextAreaGeometry>
+    where
+        ViewFn: Fn(TextFieldStatus, TextArea<'a, B, F>) -> Inner,
+        Inner: ViewLayout<C>,
+    {
+        let query = Event::TextArea(TextAreaQuery::default());
+        _ = (self.label)(state.status, self.area(state.status)).handle_event(
+            &query,
+            context,
+            render_tree,
+            captures,
+            &mut state.label,
+            &mut DefaultFocus::default_first(),
+        );
+        let Event::TextArea(query) = query else {
+            unreachable!();
+        };
+        query.answer.get()
     }
 
     fn handle_key<C: ?Sized>(
@@ -1122,8 +1252,11 @@ impl<C: ?Sized, B: EditText, F: Font, K: Clone> ViewLayout<C> for TextArea<'_, B
         match event {
             Event::TextArea(query) => {
                 query.answer.set(Some(TextAreaGeometry {
+                    origin: render_tree.origin,
                     width: render_tree.size.width,
                     scroll_bar_room: self.scroll_bar_room,
+                    line_height: render_tree.line_height,
+                    first_line: render_tree.scrolled.map_or(0, |scrolled| scrolled.first),
                 }));
                 EventResult::handled_unfocused()
             }
