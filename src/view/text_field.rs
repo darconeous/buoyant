@@ -459,8 +459,7 @@ impl<C: ?Sized> OnActive<C> for NoActive {
 pub struct TextFieldStatus {
     focused: bool,
     active: bool,
-    /// Focus moved away by direction while the field was edited: editing
-    /// resumes when focus returns.
+    /// The field was tapped without focus: editing begins as focus arrives.
     resume: bool,
 }
 
@@ -487,9 +486,9 @@ impl TextFieldStatus {
 /// Backspace erases, and Enter submits; submitting, a press, a blur, or
 /// Backspace with no text makes it inactive. The arrow keys move the
 /// cursor, Up and Down by the lines shown; Up from the first line and Down
-/// from the last are left to the views around, so focus can move on. A
-/// directional move ([`Toward`](FocusAction::Toward)) takes focus even
-/// from an active field, and the edit resumes when focus returns.
+/// from the last are left to the views around. A directional move
+/// ([`Toward`](FocusAction::Toward)) leaves an inactive field, but never an
+/// active one: the cursor alone moves while the field is edited.
 ///
 /// Whether the field is active is its own state, so it lasts while the
 /// field is shown and is forgotten when it is not; the text is the
@@ -867,17 +866,13 @@ impl<'a, B: EditText, F: Font, L, S, ViewFn, A> TextField<'a, B, F, L, S, ViewFn
                 *status = TextFieldStatus::default();
                 EventResult::handled_unfocused()
             }
-            // A directional move leaves the field even while it is edited.
-            // The edit waits for focus to return, as it does at once when
-            // the move leads nowhere.
-            FocusAction::Toward { .. } => {
-                *status = TextFieldStatus {
-                    resume: status.active || status.resume,
-                    ..TextFieldStatus::default()
-                };
-                EventResult::Deferred
-            }
-            FocusAction::Next | FocusAction::Previous | FocusAction::Blur => {
+            // Edited, the field keeps focus: the arrow key that came first
+            // moved the cursor, or found it at the end.
+            FocusAction::Toward { .. } if status.active => EventResult::handled_focused(shape),
+            FocusAction::Next
+            | FocusAction::Previous
+            | FocusAction::Toward { .. }
+            | FocusAction::Blur => {
                 status.focused = false;
                 EventResult::Deferred
             }

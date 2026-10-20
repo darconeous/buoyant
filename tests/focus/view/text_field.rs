@@ -460,13 +460,11 @@ fn up_and_down_move_the_cursor_by_line_and_leave_from_the_ends() {
     assert!(app.key_down(Key::DownArrow).is_handled());
     assert_eq!(cursor(&app), 13);
 
-    // From the last line, Down is left to focus, which leaves the field;
-    // coming back, the edit resumes where it was.
+    // From the last line, Down is left to the views around, but the edited
+    // field keeps focus.
     assert!(!app.key_down(Key::DownArrow).is_handled());
-    assert_eq!(app.move_toward(Direction::Down).key(), Some(FocusKey(3)));
-    assert_eq!(app.state().activity, [true, false]);
-    assert_eq!(app.move_toward(Direction::Up).key(), Some(FocusKey(2)));
-    assert_eq!(app.state().activity, [true, false, true]);
+    assert_eq!(app.move_toward(Direction::Down).key(), Some(FocusKey(2)));
+    assert_eq!(app.state().activity, [true]);
     assert_eq!(cursor(&app), 13);
 
     // Left and Right move by character, and set the column anew.
@@ -477,9 +475,35 @@ fn up_and_down_move_the_cursor_by_line_and_leave_from_the_ends() {
     assert!(app.key_down(Key::UpArrow).is_handled());
     assert_eq!(cursor(&app), 1);
 
-    // From the first line, Up is left to focus.
+    // From the first line too. Once the edit ends, a move leaves the field.
     assert!(!app.key_down(Key::UpArrow).is_handled());
+    assert_eq!(app.move_toward(Direction::Up).key(), Some(FocusKey(2)));
+    assert!(app.select().is_handled());
+    assert_eq!(app.state().activity, [true, false]);
     assert_eq!(app.move_toward(Direction::Up).key(), Some(FocusKey(1)));
+}
+
+#[test]
+fn a_directional_move_never_leaves_an_edited_field() {
+    let mut state = State::default();
+    state.drafts[0] = "ab".into();
+    let mut app = App::new(state, Size::new(6, 5), between_buttons as fn(&State) -> _)
+        .with_roles(Role::Button | Role::TextEntry);
+    assert_eq!(app.focus_forward().key(), Some(FocusKey(1)));
+    assert_eq!(app.move_toward(Direction::Down).key(), Some(FocusKey(2)));
+    assert!(app.select().is_handled());
+    for dir in [
+        Direction::Up,
+        Direction::Down,
+        Direction::Left,
+        Direction::Right,
+    ] {
+        assert_eq!(app.move_toward(dir).key(), Some(FocusKey(2)), "{dir:?}");
+    }
+    assert_eq!(app.state().activity, [true]);
+    assert_eq!(app.state().drafts[0].cursor(), 2);
+    assert!(app.key_down(Key::Character('c')).is_handled());
+    assert_eq!(app.state().drafts[0].text(), "abc");
 }
 
 /// A field whose text area sits beside a mark, over a background.
