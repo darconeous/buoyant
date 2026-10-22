@@ -61,6 +61,10 @@ pub(crate) struct TextAreaGeometry {
 pub enum Key {
     /// A character key.
     Character(char),
+    /// Text entered at once, such as an emoji chosen from a picker.
+    ///
+    /// A text field inserts it whole, or not at all when it does not fit.
+    Text(&'static str),
     /// The up arrow key.
     UpArrow,
     /// The down arrow key.

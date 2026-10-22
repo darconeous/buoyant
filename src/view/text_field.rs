@@ -1031,7 +1031,7 @@ impl<'a, B: EditText, F: Font, L, S, ViewFn, A> TextField<'a, B, F, L, S, ViewFn
         if !status.active {
             // Typing starts editing; anything else is for the views around.
             match key {
-                Key::Character(_) | Key::Enter => status.active = true,
+                Key::Character(_) | Key::Text(_) | Key::Enter => status.active = true,
                 _ => return EventResult::Deferred,
             }
             context.request_view_rebuild();
@@ -1060,6 +1060,7 @@ impl<'a, B: EditText, F: Font, L, S, ViewFn, A> TextField<'a, B, F, L, S, ViewFn
         }
         match key {
             Key::Character(c) => _ = buffer.insert(c),
+            Key::Text(text) => _ = buffer.insert_str(text),
             Key::Backspace => _ = buffer.erase_back(),
             Key::LeftArrow => _ = buffer.move_back(),
             Key::RightArrow => _ = buffer.move_forward(),

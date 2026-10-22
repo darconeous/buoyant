@@ -184,6 +184,18 @@ fn a_full_field_refuses_input() {
 }
 
 #[test]
+fn text_goes_in_whole_or_not_at_all() {
+    let mut app = app("abcdefghij", 20, one_field);
+    // Its thumb would fit in the six bytes left, but not with its tone.
+    assert!(app.key_down(Key::Text("\u{1F44D}\u{1F3FD}")).is_handled());
+    app.finalize_view();
+    assert_eq!(app.state().drafts[0].text(), "abcdefghij");
+    assert!(app.key_down(Key::Text("\u{2764}\u{FE0F}")).is_handled());
+    app.finalize_view();
+    assert_eq!(app.state().drafts[0].text(), "abcdefghij\u{2764}\u{FE0F}");
+}
+
+#[test]
 fn enter_starts_editing_then_submits() {
     let mut app = app("hi", 5, one_field);
     assert!(app.key_down(Key::Enter).is_handled());
