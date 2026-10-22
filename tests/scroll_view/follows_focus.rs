@@ -286,3 +286,50 @@ fn turning_past_the_first_row_scrolls_back_a_step_at_a_time() {
     assert_eq!(app.previous().key(), Some(FocusKey(0)));
     assert_eq!(span(app.focus_shape()).0, BESIDE as i32);
 }
+
+const PAGE: u32 = 250;
+
+/// A page taller than the view, with nothing in it to focus, under `key`.
+fn page(_: &State, self_focus: bool) -> impl View<(), State> + use<> {
+    ScrollView::new(Rectangle.frame_sized(50, PAGE))
+        .with_bar_visibility(ScrollBarVisibility::Never)
+        .with_scroll_step(STEP)
+        .with_self_focus(self_focus)
+        .focus_key(FocusKey(9))
+}
+
+fn read(state: &State) -> impl View<(), State> + use<> {
+    page(state, true)
+}
+
+fn unread(state: &State) -> impl View<(), State> + use<> {
+    page(state, false)
+}
+
+#[test]
+fn content_with_nothing_to_focus_takes_focus_and_is_stepped_through() {
+    let mut app = app(State::default(), read);
+    assert_eq!(app.focus_forward().key(), Some(FocusKey(9)));
+    assert_eq!(span(app.focus_shape()), (0, PAGE as i32));
+
+    let mut steps = 0;
+    while span(app.focus_shape()).1 > VIEW as i32 {
+        assert_eq!(app.next().key(), Some(FocusKey(9)));
+        steps += 1;
+    }
+    assert_eq!(steps, (PAGE - VIEW).div_ceil(STEP));
+    // At its end, focus moves on, and there is nowhere to go.
+    assert!(!app.next().is_handled());
+
+    app.focus_backward();
+    while span(app.focus_shape()).0 < 0 {
+        assert_eq!(app.previous().key(), Some(FocusKey(9)));
+    }
+    assert_eq!(span(app.focus_shape()).0, 0);
+}
+
+#[test]
+fn content_with_nothing_to_focus_takes_none_unless_asked() {
+    let mut app = app(State::default(), unread);
+    assert!(!app.focus_forward().is_handled());
+}

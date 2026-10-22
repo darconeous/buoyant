@@ -6,7 +6,10 @@ use embedded_touch::{Phase, Touch};
 
 use crate::{
     event::{Event, EventContext, EventResult, TouchResult},
-    focus::{FocusAction, FocusDirection, FocusGroup, FocusKey, Seek, SeekResult, SeekTarget},
+    focus::{
+        DefaultFocus, FocusAction, FocusDirection, FocusGroup, FocusKey, Role, Seek, SeekResult,
+        SeekTarget,
+    },
     layout::{LayoutDirection, ResolvedLayout},
     primitives::{
         Dimensions, Point, ProposedDimension, ProposedDimensions, Size, geometry::Rectangle,
@@ -148,6 +151,7 @@ pub struct ScrollView<Inner> {
     initial_pin_to_end: bool,
     focus_margin: u32,
     scroll_step: u32,
+    self_focus: bool,
     short_content_at_end: bool,
     glide_time: Duration,
     end_generation: Option<u32>,
@@ -164,6 +168,7 @@ impl<Inner: ViewMarker> ScrollView<Inner> {
             initial_pin_to_end: false,
             focus_margin: 0,
             scroll_step: 0,
+            self_focus: false,
             short_content_at_end: false,
             glide_time: GLIDE_TIME,
             end_generation: None,
@@ -191,6 +196,20 @@ impl<Inner: ViewMarker> ScrollView<Inner> {
     #[must_use]
     pub fn with_scroll_step(mut self, step: u32) -> Self {
         self.scroll_step = step;
+        self
+    }
+
+    /// Takes focus itself, as a [`Button`](crate::focus::Role::Button)
+    /// does, when nothing in its content can: the content as a whole is
+    /// then the focused element, which moving focus steps through as
+    /// [`with_scroll_step`](Self::with_scroll_step) sets, before focus moves
+    /// on from it. Nothing is drawn to show it.
+    ///
+    /// For content that is only read, such as a page of text or a list of
+    /// readouts, where focusing each part would be a distraction.
+    #[must_use]
+    pub fn with_self_focus(mut self, self_focus: bool) -> Self {
+        self.self_focus = self_focus;
         self
     }
 
@@ -424,6 +443,12 @@ impl<Inner> ScrollView<Inner> {
             ScrollDirection::Both => (true, true),
         };
         ContentPinning::Pinned(horizontal, vertical)
+    }
+
+    /// The whole content, as a focused element's shape is kept: in the
+    /// content's coordinates.
+    fn whole_content<R>(render_tree: &ScrollRenderable<R>) -> ContentShape {
+        ContentShape::Rectangle(Rectangle::new(Point::zero(), render_tree.inner_size))
     }
 
     /// Where the content's origin is placed.
@@ -958,6 +983,20 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
                 return past;
             }
 
+            // Nothing in the content took focus: the content as a whole
+            // does, where the scroll view takes focus itself.
+            if matches!(result, EventResult::Deferred)
+                && focus_event.is_acquire()
+                && self.self_focus
+                && context.roles.contains(Role::Button)
+            {
+                result = EventResult::Handled {
+                    shape: Self::whole_content(render_tree),
+                    group: *group,
+                    key: None,
+                };
+            }
+
             if let EventResult::Handled {
                 shape,
                 key,
@@ -1101,8 +1140,19 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             }
             _ => *seek,
         };
-        self.inner
+        match self
+            .inner
             .seek(&seek, render_tree.inner(), &state.inner_state, focus)
+        {
+            SeekResult::Absent
+                if self.self_focus
+                    && seek.roles.contains(Role::Button)
+                    && matches!(seek.target, SeekTarget::Any | SeekTarget::At(_)) =>
+            {
+                SeekResult::found(DefaultFocus::default_first())
+            }
+            result => result,
+        }
     }
 
     #[expect(clippy::too_many_lines)]
