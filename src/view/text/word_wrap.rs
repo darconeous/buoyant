@@ -1,5 +1,5 @@
 use crate::{
-    font::FontMetrics,
+    font::{self, FontMetrics},
     primitives::{Point, ProposedDimension, Size, geometry::Rectangle},
     view::text::WrappedLine,
 };
@@ -60,22 +60,25 @@ impl<'a, F: FontMetrics> WordWrap<'a, F> {
             return (0, 0, 0);
         }
 
-        let Some(first_char) = text.chars().next() else {
+        let Some(first) = font::clusters(text).next() else {
             return (0, 0, 0);
         };
 
-        let Some(last_char) = text.chars().next_back() else {
+        let Some(last) = font::clusters(text).next_back() else {
             return (0, 0, 0);
         };
 
-        // Get rendered bounds for first and last characters
-        let first_bounds = self.font.rendered_size(first_char).unwrap_or_else(|| {
-            Rectangle::new(Point::zero(), Size::new(self.font.advance(first_char), 0))
+        // Get rendered bounds for first and last clusters
+        let first_bounds = self.font.cluster_rendered_size(first).unwrap_or_else(|| {
+            Rectangle::new(
+                Point::zero(),
+                Size::new(self.font.cluster_advance(first), 0),
+            )
         });
-        let last_char_advance = self.font.advance(last_char);
+        let last_char_advance = self.font.cluster_advance(last);
         let last_bounds = self
             .font
-            .rendered_size(last_char)
+            .cluster_rendered_size(last)
             .unwrap_or_else(|| Rectangle::new(Point::zero(), Size::new(last_char_advance, 0)));
 
         let min_x = first_bounds.origin.x;
@@ -94,7 +97,7 @@ impl<'a, F: FontMetrics> WordWrap<'a, F> {
 
     /// Calculate width for a line when we don't already have it from iteration.
     fn calculate_width(&self, text: &str) -> u32 {
-        text.chars().map(|ch| self.font.advance(ch)).sum()
+        self.font.str_width(text)
     }
 
     /// Helper to create a `WrappedLine` with appropriate precise width.
@@ -127,10 +130,10 @@ impl<'a, F: FontMetrics> WordWrap<'a, F> {
     /// Helper function to find force split position, returns `(split_pos, width_up_to_split)`
     fn find_split_pos(&self, text: &str) -> Option<(usize, u32)> {
         let mut width = 0;
-        for (pos, ch) in text.char_indices() {
-            let char_width = self.font.advance(ch);
+        for (pos, cluster) in font::cluster_indices(text) {
+            let char_width = self.font.cluster_advance(cluster);
             if ProposedDimension::Exact(width + char_width) > self.available_width {
-                return Some((if pos > 0 { pos } else { 1 }, width));
+                return Some((if pos > 0 { pos } else { cluster.len() }, width));
             }
             width += char_width;
         }
@@ -166,12 +169,11 @@ impl<'a, F: FontMetrics + 'a> Iterator for WordWrap<'a, F> {
         let mut last_space: Option<(usize, u32)> = None;
 
         // Single pass through the string to find split points
-        for (pos, ch) in self.remaining.char_indices() {
+        for (pos, cluster) in font::cluster_indices(self.remaining) {
             // Check for newline first
-            if ch == '\n' {
+            if super::character_wrap::is_newline(cluster) {
                 let (line, rest) = self.remaining.split_at(pos);
-                // This is safe because ch == \n which is 1 byte
-                self.remaining = &rest[1..];
+                self.remaining = &rest[cluster.len()..];
 
                 // Handle empty lines and spaces after newlines
                 if line.is_empty() {
@@ -191,9 +193,9 @@ impl<'a, F: FontMetrics + 'a> Iterator for WordWrap<'a, F> {
                 return Some(self.make_wrapped_line(line, line_width));
             }
 
-            let char_width = self.font.advance(ch);
+            let char_width = self.font.cluster_advance(cluster);
 
-            if ch.is_whitespace() {
+            if cluster.chars().all(char::is_whitespace) {
                 last_space = Some((pos, width));
             }
 
@@ -215,7 +217,7 @@ impl<'a, F: FontMetrics + 'a> Iterator for WordWrap<'a, F> {
                 let split_pos = if pos > 0 {
                     pos
                 } else {
-                    let Some(p) = self.remaining.char_indices().nth(1) else {
+                    let Some(p) = font::cluster_indices(self.remaining).nth(1) else {
                         let last_char = self.remaining;
                         self.remaining = "";
                         let char_width = self.calculate_width(last_char);
@@ -235,8 +237,8 @@ impl<'a, F: FontMetrics + 'a> Iterator for WordWrap<'a, F> {
         if self.remaining.chars().all(char::is_whitespace) {
             let mut end = self.remaining.len();
             let mut width = 0;
-            for (pos, ch) in self.remaining.char_indices() {
-                let char_width = self.font.advance(ch);
+            for (pos, cluster) in font::cluster_indices(self.remaining) {
+                let char_width = self.font.cluster_advance(cluster);
                 if ProposedDimension::Exact(width + char_width) > self.available_width {
                     end = pos;
                     break;
@@ -574,8 +576,6 @@ mod tests {
         }
     }
 
-    impl crate::font::Sealed for VariableWidthFont {}
-
     impl<C> FontRender<C> for VariableWidthFont {
         fn draw(
             &self,
@@ -816,8 +816,6 @@ mod tests {
             }
         }
     }
-
-    impl<F> crate::font::Sealed for FontTrace<F> {}
 
     impl<C, F: FontRender<C>> FontRender<C> for FontTrace<F> {
         fn draw(

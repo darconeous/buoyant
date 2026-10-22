@@ -142,8 +142,8 @@ fn calculate_vertical_extent(
     let mut min_y = i32::MAX;
     let mut max_y = i32::MIN;
 
-    for ch in text.chars() {
-        if let Some(char_bounds) = metrics.rendered_size(ch) {
+    for cluster in crate::font::clusters(text) {
+        if let Some(char_bounds) = metrics.cluster_rendered_size(cluster) {
             let top = char_bounds.origin.y + y_offset;
             let bottom = top + char_bounds.size.height as i32;
             min_y = core::cmp::min(min_y, top);
@@ -544,8 +544,6 @@ mod test {
             &self.metrics
         }
     }
-
-    impl crate::font::Sealed for ArbitraryFont {}
 
     impl<C> FontRender<C> for ArbitraryFont {
         fn draw(

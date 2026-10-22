@@ -60,8 +60,6 @@ impl Font for rusttype::Font<'_> {
     }
 }
 
-impl font::Sealed for rusttype::Font<'_> {}
-
 impl<C> FontRender<C> for rusttype::Font<'static>
 where
     C: PixelColor + Debug + Into<Rgb888> + From<Rgb888>,

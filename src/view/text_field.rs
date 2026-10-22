@@ -8,7 +8,7 @@ use crate::{
     environment::LayoutEnvironment,
     event::{Event, EventContext, EventResult, Key, TextAreaGeometry, TextAreaQuery, TouchResult},
     focus::{DefaultFocus, FocusAction, Role, Seek, SeekResult, SeekTarget},
-    font::{CustomSize, Font, FontMetrics},
+    font::{self, CustomSize, Font, FontMetrics},
     layout::ResolvedLayout,
     primitives::{Point, ProposedDimension, ProposedDimensions, Size, geometry::Rectangle},
     render::{self, ContentShape, IntrinsicShape, text_field::MAX_VISIBLE_LINES},
@@ -109,23 +109,31 @@ impl<T: EditText> EditBuffer<T> {
     ///
     /// Returns `false`, changing nothing, when the text is full.
     pub fn insert(&mut self, c: char) -> bool {
+        self.insert_str(c.encode_utf8(&mut [0; 4]))
+    }
+
+    /// Inserts `text` at the cursor, whole, and moves the cursor past it.
+    ///
+    /// Returns `false`, changing nothing, when the text is full.
+    pub fn insert_str(&mut self, text: &str) -> bool {
         let cursor = self.cursor();
-        if !self.text.splice(cursor..cursor, c.encode_utf8(&mut [0; 4])) {
+        if !self.text.splice(cursor..cursor, text) {
             return false;
         }
-        self.cursor = cursor + c.len_utf8();
+        self.cursor = cursor + text.len();
         true
     }
 
-    /// Removes the character before the cursor.
+    /// Removes the grapheme cluster before the cursor, such as an emoji
+    /// with its skin tone, whole.
     ///
     /// Returns `false` when the cursor is at the start.
     pub fn erase_back(&mut self) -> bool {
         let cursor = self.cursor();
-        let Some(c) = self.text()[..cursor].chars().next_back() else {
+        let Some(cluster) = font::clusters(&self.text()[..cursor]).next_back() else {
             return false;
         };
-        let start = cursor - c.len_utf8();
+        let start = cursor - cluster.len();
         if !self.text.splice(start..cursor, "") {
             return false;
         }
@@ -134,33 +142,32 @@ impl<T: EditText> EditBuffer<T> {
     }
 
     /// Places the cursor at `index`, a byte index into the text, moved back
-    /// to a character boundary and kept within the text.
+    /// to a cluster boundary and kept within the text.
     pub fn set_cursor(&mut self, index: usize) {
         self.cursor = self.clamped(index);
     }
 
-    /// Moves the cursor back one character. Returns `false` at the start.
+    /// Moves the cursor back one cluster. Returns `false` at the start.
     pub fn move_back(&mut self) -> bool {
         let cursor = self.cursor();
-        match self.text()[..cursor].chars().next_back() {
-            Some(c) => {
-                self.cursor = cursor - c.len_utf8();
-                true
-            }
-            None => false,
-        }
+        let Some(len) = font::clusters(&self.text()[..cursor])
+            .next_back()
+            .map(str::len)
+        else {
+            return false;
+        };
+        self.cursor = cursor - len;
+        true
     }
 
-    /// Moves the cursor forward one character. Returns `false` at the end.
+    /// Moves the cursor forward one cluster. Returns `false` at the end.
     pub fn move_forward(&mut self) -> bool {
         let cursor = self.cursor();
-        match self.text()[cursor..].chars().next() {
-            Some(c) => {
-                self.cursor = cursor + c.len_utf8();
-                true
-            }
-            None => false,
-        }
+        let Some(len) = font::clusters(&self.text()[cursor..]).next().map(str::len) else {
+            return false;
+        };
+        self.cursor = cursor + len;
+        true
     }
 
     /// Moves the cursor to the start of the next word, or the end.
@@ -186,22 +193,27 @@ impl<T: EditText> EditBuffer<T> {
         word_start < start
     }
 
-    /// The nearest character boundary at or before `index`.
+    /// The nearest cluster boundary at or before `index`.
     fn clamped(&self, index: usize) -> usize {
-        let mut index = index.min(self.text().len());
-        while !self.text().is_char_boundary(index) {
-            index -= 1;
+        let text = self.text();
+        if index >= text.len() {
+            return text.len();
         }
-        index
+        font::cluster_indices(text)
+            .map(|(start, _)| start)
+            .take_while(|&start| start <= index)
+            .last()
+            .unwrap_or(0)
     }
 }
 
 impl<T: EditText + Default> From<&str> for EditBuffer<T> {
-    /// A buffer holding as much of `text` as fits, with the cursor at its end.
+    /// A buffer holding as many of `text`'s clusters as fit, with the
+    /// cursor at its end.
     fn from(text: &str) -> Self {
         let mut buffer = Self::default();
-        for c in text.chars() {
-            if !buffer.insert(c) {
+        for cluster in font::clusters(text) {
+            if !buffer.insert_str(cluster) {
                 break;
             }
         }
@@ -250,18 +262,18 @@ impl<M: FontMetrics> Iterator for EditLines<'_, M> {
         let mut seen_word = false;
         // Where the line may break: after the spaces that follow a word.
         let mut break_at = None;
-        for (offset, c) in self.text[start..].char_indices() {
+        for (offset, cluster) in font::cluster_indices(&self.text[start..]) {
             let index = start + offset;
-            if c == '\n' {
-                self.start = index + 1;
+            if cluster.ends_with('\n') {
+                self.start = index + cluster.len();
                 return Some(start..self.start);
             }
-            let advance = self.metrics.advance(c);
-            if c.is_whitespace() {
+            let advance = self.metrics.cluster_advance(cluster);
+            if cluster.chars().all(char::is_whitespace) {
                 // Spaces never force a break; they hang past the end.
                 x += advance;
                 if seen_word {
-                    break_at = Some(index + c.len_utf8());
+                    break_at = Some(index + cluster.len());
                 }
                 continue;
             }
@@ -280,9 +292,9 @@ impl<M: FontMetrics> Iterator for EditLines<'_, M> {
 
 /// The width of `text`, leaving out a newline.
 fn advance_of(text: &str, metrics: &impl FontMetrics) -> u32 {
-    text.chars()
-        .filter(|&c| c != '\n')
-        .map(|c| metrics.advance(c))
+    font::clusters(text)
+        .filter(|cluster| !cluster.ends_with('\n'))
+        .map(|cluster| metrics.cluster_advance(cluster))
         .sum()
 }
 
@@ -370,12 +382,12 @@ fn column_at(
 ) -> usize {
     let mut best = (range.start, x);
     let mut across = 0;
-    for (offset, c) in text[range.clone()].char_indices() {
-        if c == '\n' {
+    for (offset, cluster) in font::cluster_indices(&text[range.clone()]) {
+        if cluster.ends_with('\n') {
             break;
         }
-        across += metrics.advance(c);
-        let index = range.start + offset + c.len_utf8();
+        across += metrics.cluster_advance(cluster);
+        let index = range.start + offset + cluster.len();
         if index == range.end && !last {
             break;
         }
@@ -1342,6 +1354,29 @@ mod tests {
         assert!(buffer.erase_back());
         assert_eq!(buffer.text(), "aüb");
         assert_eq!(buffer.cursor(), 3);
+    }
+
+    #[cfg(feature = "unicode-segmentation")]
+    #[test]
+    fn editing_keeps_emoji_whole() {
+        // A thumbs up with a skin tone, and a flag: two code points each.
+        let mut buffer = EditBuffer::<heapless::String<32>>::from("a👍🏽🇫🇷");
+        assert!(buffer.move_back());
+        assert_eq!(buffer.cursor(), "a👍🏽".len());
+        assert!(buffer.erase_back());
+        assert_eq!(buffer.text(), "a🇫🇷");
+        assert_eq!(buffer.cursor(), 1);
+        buffer.set_cursor(3);
+        assert_eq!(buffer.cursor(), 1);
+        assert!(buffer.move_forward());
+        assert_eq!(buffer.cursor(), buffer.text().len());
+    }
+
+    #[cfg(feature = "unicode-segmentation")]
+    #[test]
+    fn a_cluster_that_does_not_fit_is_left_out() {
+        let buffer = EditBuffer::<heapless::String<8>>::from("ab👍🏽");
+        assert_eq!(buffer.text(), "ab");
     }
 
     #[test]

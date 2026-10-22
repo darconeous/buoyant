@@ -280,11 +280,11 @@ impl RenderTarget for CrosstermRenderTarget {
         }
     }
 
-    fn draw_glyphs<C: Into<Self::ColorFormat>, F: FontRender<Self::ColorFormat>>(
+    fn draw_glyphs<'g, C: Into<Self::ColorFormat>, F: FontRender<Self::ColorFormat>>(
         &mut self,
         offset: Point,
         brush: &impl Brush<ColorFormat = C>,
-        glyphs: impl Iterator<Item = Glyph>,
+        glyphs: impl Iterator<Item = Glyph<'g>>,
         _font: &F,
         _font_attributes: &F::Attributes,
         _conservative_bounds: &Rectangle,
@@ -296,7 +296,7 @@ impl RenderTarget for CrosstermRenderTarget {
         for glyph in glyphs {
             let point = offset + glyph.offset;
             if self.active_layer.clip_rect.contains(&point) {
-                self.draw_character(point, glyph.character, color);
+                self.draw_character(point, glyph.character(), color);
             }
         }
     }

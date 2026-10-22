@@ -84,11 +84,11 @@ pub trait RenderTarget {
     );
 
     /// Draws a series of glyphs using the specified style and brush.
-    fn draw_glyphs<C: Into<Self::ColorFormat>, F: font::FontRender<Self::ColorFormat>>(
+    fn draw_glyphs<'g, C: Into<Self::ColorFormat>, F: font::FontRender<Self::ColorFormat>>(
         &mut self,
         offset: Point,
         brush: &impl Brush<ColorFormat = C>,
-        glyphs: impl Iterator<Item = Glyph>,
+        glyphs: impl Iterator<Item = Glyph<'g>>,
         font: &F,
         font_attributes: &F::Attributes,
         conservative_bounds: &Rectangle,
@@ -128,11 +128,20 @@ pub trait RenderTarget {
 
 /// Positioned glyph.
 #[derive(Copy, Clone, Default, Debug)]
-pub struct Glyph {
-    /// The character represented by the glyph.
-    pub character: char,
+pub struct Glyph<'a> {
+    /// The grapheme cluster the glyph draws.
+    pub cluster: &'a str,
     /// Offset in run, relative to transform.
     pub offset: Point,
+}
+
+impl Glyph<'_> {
+    /// The cluster's first character, for targets that draw a character to
+    /// a cell.
+    #[must_use]
+    pub fn character(&self) -> char {
+        self.cluster.chars().next().unwrap_or(' ')
+    }
 }
 
 /// Describes the color content of a filled or stroked shape.

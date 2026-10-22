@@ -27,8 +27,6 @@ impl Font for MonoFont<'_> {
     }
 }
 
-impl font::Sealed for MonoFont<'_> {}
-
 impl<C: PixelColor> FontRender<C> for MonoFont<'_> {
     fn draw(
         &self,

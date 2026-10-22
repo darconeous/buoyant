@@ -19,8 +19,6 @@ impl Font for FontRenderer {
     }
 }
 
-impl font::Sealed for FontRenderer {}
-
 impl<C: PixelColor> FontRender<C> for FontRenderer {
     fn draw(
         &self,

@@ -1,7 +1,7 @@
 use core::ops::Range;
 
 use crate::{
-    font::{Font, FontMetrics, FontRender},
+    font::{self, Font, FontMetrics, FontRender},
     primitives::{Interpolate, Point, Size, geometry::Rectangle},
     render::{AnimatedJoin, AnimationDomain, ContentShape, IntrinsicShape, Render},
     render_target::{Glyph, RenderTarget, SolidBrush},
@@ -54,23 +54,23 @@ impl<'a, T: AsRef<str>, F: Font> Text<'a, T, F> {
     }
 }
 
-const ELLIPSIS: char = '…';
+const ELLIPSIS: &str = "…";
 
 /// The longest prefix of `text` that fits `width` with an ellipsis after
-/// it, without trailing spaces.
+/// it, without trailing spaces. It ends between clusters.
 fn truncated_prefix<'t>(text: &'t str, width: u32, metrics: &impl FontMetrics) -> &'t str {
-    let budget = width.saturating_sub(metrics.advance(ELLIPSIS));
+    let budget = width.saturating_sub(metrics.cluster_advance(ELLIPSIS));
     let mut used = 0;
     let mut end = 0;
-    for (i, c) in text.char_indices() {
-        if c == '\n' {
+    for (i, cluster) in font::cluster_indices(text) {
+        if cluster.starts_with(['\n', '\r']) {
             break;
         }
-        used += metrics.advance(c);
+        used += metrics.cluster_advance(cluster);
         if used > budget {
             break;
         }
-        end = i + c.len_utf8();
+        end = i + cluster.len();
     }
     text[..end].trim_end()
 }
@@ -142,8 +142,7 @@ impl<C: Copy, T: AsRef<str> + Clone, F: FontRender<C>> Render<C> for Text<'_, T,
                     .saturating_sub(text.as_ptr() as usize)
                     .min(text.len());
                 let prefix = truncated_prefix(&text[start..], size.width, &metrics);
-                let width = prefix.chars().map(|c| metrics.advance(c)).sum::<u32>()
-                    + metrics.advance(ELLIPSIS);
+                let width = metrics.str_width(prefix) + metrics.cluster_advance(ELLIPSIS);
                 (prefix, width)
             } else {
                 (line.content, line.width)
@@ -166,15 +165,14 @@ impl<C: Copy, T: AsRef<str> + Clone, F: FontRender<C>> Render<C> for Text<'_, T,
                 render_target.draw_glyphs(
                     line_offset,
                     &brush,
-                    content
-                        .chars()
+                    font::clusters(content)
                         .chain(ellipsis.then_some(ELLIPSIS))
-                        .map(|c| {
+                        .map(|cluster| {
                             let glyph = Glyph {
-                                character: c,
+                                cluster,
                                 offset: Point::new(x, 0),
                             };
-                            x += metrics.advance(glyph.character) as i32;
+                            x += metrics.cluster_advance(cluster) as i32;
                             glyph
                         }),
                     self.font,

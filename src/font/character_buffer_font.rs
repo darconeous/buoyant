@@ -17,8 +17,6 @@ impl Font for CharacterBufferFont {
     }
 }
 
-impl crate::font::Sealed for CharacterBufferFont {}
-
 impl<C> FontRender<C> for CharacterBufferFont {
     fn draw(
         &self,

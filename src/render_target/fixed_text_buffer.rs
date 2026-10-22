@@ -175,18 +175,22 @@ impl<const W: usize, const H: usize> RenderTarget for FixedTextBuffer<W, H> {
         }
     }
 
-    fn draw_glyphs<C: Into<Self::ColorFormat>, F: crate::font::FontRender<Self::ColorFormat>>(
+    fn draw_glyphs<
+        'g,
+        C: Into<Self::ColorFormat>,
+        F: crate::font::FontRender<Self::ColorFormat>,
+    >(
         &mut self,
         offset: Point,
         _brush: &impl Brush<ColorFormat = C>,
-        glyphs: impl Iterator<Item = Glyph>,
+        glyphs: impl Iterator<Item = Glyph<'g>>,
         _font: &F,
         _font_attributes: &F::Attributes,
         _conservative_bounds: &Rectangle,
     ) {
         let offset = offset.applying(&self.active_layer.transform);
         for glyph in glyphs {
-            self.draw_character(offset + glyph.offset, glyph.character);
+            self.draw_character(offset + glyph.offset, glyph.character());
         }
     }
 

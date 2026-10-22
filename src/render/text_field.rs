@@ -1,7 +1,7 @@
 use core::ops::Range;
 
 use crate::{
-    font::{Font, FontMetrics, FontRender},
+    font::{self, Font, FontMetrics, FontRender},
     primitives::{
         Interpolate, Point, Size,
         geometry::{Rectangle, RoundedRectangle},
@@ -137,19 +137,19 @@ impl<F: Font, T: AsRef<str>, K> TextField<'_, F, T, K> {
             // Spaces hanging at the end of a line, and its newline, take no
             // room on screen.
             let content = line.trim_end();
-            let width = content.chars().map(|c| metrics.advance(c)).sum::<u32>();
+            let width = metrics.str_width(content);
             let line_box =
                 Rectangle::new(Point::new(origin.x, y), Size::new(width, self.line_height));
             let mut x = 0;
             render_target.draw_glyphs(
                 line_box.origin,
                 &brush,
-                content.chars().map(|c| {
+                font::clusters(content).map(|cluster| {
                     let glyph = Glyph {
-                        character: c,
+                        cluster,
                         offset: Point::new(x, 0),
                     };
-                    x += metrics.advance(c) as i32;
+                    x += metrics.cluster_advance(cluster) as i32;
                     glyph
                 }),
                 self.font,

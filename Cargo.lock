@@ -78,6 +78,7 @@ dependencies = [
  "rusttype",
  "tinytga",
  "u8g2-fonts",
+ "unicode-segmentation",
 ]
 
 [[package]]

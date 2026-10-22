@@ -1,5 +1,5 @@
 use crate::{
-    font::FontMetrics,
+    font::{self, FontMetrics},
     primitives::{Point, ProposedDimension, Size, geometry::Rectangle},
     view::text::WrappedLine,
 };
@@ -71,22 +71,25 @@ impl<'a, F: FontMetrics> CharacterWrap<'a, F> {
             return (0, 0, 0);
         }
 
-        let Some(first_char) = text.chars().next() else {
+        let Some(first) = font::clusters(text).next() else {
             return (0, 0, 0);
         };
 
-        let Some(last_char) = text.chars().next_back() else {
+        let Some(last) = font::clusters(text).next_back() else {
             return (0, 0, 0);
         };
 
-        // Get rendered bounds for first and last characters
-        let first_bounds = self.font.rendered_size(first_char).unwrap_or_else(|| {
-            Rectangle::new(Point::zero(), Size::new(self.font.advance(first_char), 0))
+        // Get rendered bounds for first and last clusters
+        let first_bounds = self.font.cluster_rendered_size(first).unwrap_or_else(|| {
+            Rectangle::new(
+                Point::zero(),
+                Size::new(self.font.cluster_advance(first), 0),
+            )
         });
-        let last_char_advance = self.font.advance(last_char);
+        let last_char_advance = self.font.cluster_advance(last);
         let last_bounds = self
             .font
-            .rendered_size(last_char)
+            .cluster_rendered_size(last)
             .unwrap_or_else(|| Rectangle::new(Point::zero(), Size::new(last_char_advance, 0)));
 
         let min_x = first_bounds.origin.x;
@@ -135,26 +138,25 @@ impl<'a, F: FontMetrics + 'a> Iterator for CharacterWrap<'a, F> {
     type Item = WrappedLine<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Return as many characters as fit within available width, always at least one (or exit)
-        let mut remaining_iter = self.remaining.char_indices();
-        let (mut split_pos, mut ch) = remaining_iter.next()?;
+        // Return as many clusters as fit within available width, always at least one (or exit)
+        let mut remaining_iter = font::cluster_indices(self.remaining);
+        let (mut split_pos, mut cluster) = remaining_iter.next()?;
 
-        let mut width = self.font.advance(ch);
+        let mut width = self.font.cluster_advance(cluster);
 
         loop {
             // Newlines always break the line
-            if ch == '\n' {
+            if is_newline(cluster) {
                 let (line, rest) = self.remaining.split_at(split_pos);
-                // Skip the newline character itself
-                // This is safe because we know \n is 1 byte
-                self.remaining = &rest[1..];
+                // Skip the newline itself
+                self.remaining = &rest[cluster.len()..];
 
                 return Some(self.make_wrapped_line(line, width));
             }
 
-            if let Some((idx, character)) = remaining_iter.next() {
-                let new_width = width + self.font.advance(character);
-                ch = character;
+            if let Some((idx, next)) = remaining_iter.next() {
+                let new_width = width + self.font.cluster_advance(next);
+                cluster = next;
                 split_pos = idx;
                 if ProposedDimension::Exact(new_width) > self.available_width {
                     break;
@@ -166,14 +168,13 @@ impl<'a, F: FontMetrics + 'a> Iterator for CharacterWrap<'a, F> {
             }
         }
 
-        // If the next character is a newline, consume it as well because we
-        // are naturally breaking here. However if this is the last character,
+        // If the next cluster is a newline, consume it as well because we
+        // are naturally breaking here. However if this is the last cluster,
         // We should still output one more empty line
-        if ch == '\n' && split_pos != self.remaining.len() - 1 {
+        if is_newline(cluster) && split_pos + cluster.len() != self.remaining.len() {
             let (line, rest) = self.remaining.split_at(split_pos);
-            // Skip the newline character itself
-            // This is safe because we know \n is 1 byte
-            self.remaining = &rest[1..];
+            // Skip the newline itself
+            self.remaining = &rest[cluster.len()..];
 
             return Some(self.make_wrapped_line(line, width));
         }
@@ -182,6 +183,11 @@ impl<'a, F: FontMetrics + 'a> Iterator for CharacterWrap<'a, F> {
         self.remaining = rest;
         Some(self.make_wrapped_line(result, width))
     }
+}
+
+/// A line break: `\n`, or `\r\n` taken as one cluster.
+pub(super) fn is_newline(cluster: &str) -> bool {
+    cluster.ends_with('\n')
 }
 
 #[cfg(test)]
@@ -204,6 +210,18 @@ mod tests {
         assert_eq!(
             wrap.map(|l| l.content).collect::<Vec<&str>>(),
             vec!["hello"]
+        );
+    }
+
+    #[cfg(feature = "unicode-segmentation")]
+    #[test]
+    fn clusters_are_never_split() {
+        // Each cluster is two characters wide in this font.
+        let metrics = &FONT.metrics(&());
+        let wrap = CharacterWrap::new("🇫🇷🇬🇧👍🏽", 5, metrics, false);
+        assert_eq!(
+            wrap.map(|l| l.content).collect::<Vec<&str>>(),
+            vec!["🇫🇷🇬🇧", "👍🏽"]
         );
     }
 
@@ -299,8 +317,6 @@ mod tests {
             VariableWidthFontMetrics
         }
     }
-
-    impl crate::font::Sealed for VariableWidthFont {}
 
     impl<C> FontRender<C> for VariableWidthFont {
         fn draw(

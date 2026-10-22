@@ -299,11 +299,11 @@ where
         }
     }
 
-    fn draw_glyphs<T: Into<Self::ColorFormat>, F: FontRender<Self::ColorFormat>>(
+    fn draw_glyphs<'g, T: Into<Self::ColorFormat>, F: FontRender<Self::ColorFormat>>(
         &mut self,
         offset: Point,
         brush: &impl Brush<ColorFormat = T>,
-        glyphs: impl Iterator<Item = Glyph>,
+        glyphs: impl Iterator<Item = Glyph<'g>>,
         font: &F,
         font_attributes: &F::Attributes,
         conservative_bounds: &Rectangle,
@@ -328,8 +328,8 @@ where
         match clip_rect.intersection_with(&text_bounds) {
             Intersection::Contains => {
                 glyphs.for_each(|glyph| {
-                    font.draw(
-                        glyph.character,
+                    font.draw_cluster(
+                        glyph.cluster,
                         offset + glyph.offset,
                         color,
                         self.active_layer.background_hint,
@@ -341,8 +341,8 @@ where
             Intersection::Overlaps => {
                 let mut surface = ClippedSurface::new(&mut self.surface, clip_rect);
                 glyphs.for_each(|glyph| {
-                    font.draw(
-                        glyph.character,
+                    font.draw_cluster(
+                        glyph.cluster,
                         offset + glyph.offset,
                         color,
                         self.active_layer.background_hint,

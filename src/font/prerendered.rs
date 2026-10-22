@@ -12,7 +12,7 @@
 //! The tables are meant to be generated, typically by a build script that
 //! rasterizes a font file, and placed in static memory.
 
-use crate::font::{self, CustomSize, Font, FontMetrics, FontRender, VMetrics};
+use crate::font::{CustomSize, Font, FontMetrics, FontRender, VMetrics};
 use crate::primitives::{Interpolate, Pixel, Point, Size, geometry::Rectangle};
 use crate::render_target::Surface;
 
@@ -156,8 +156,6 @@ impl FontMetrics for &'static Face {
         self.glyph(character).map_or(0, |g| u32::from(g.advance))
     }
 }
-
-impl font::Sealed for PrerenderedFont {}
 
 impl<C: Interpolate + Copy> FontRender<C> for PrerenderedFont {
     fn draw(
