@@ -33,10 +33,19 @@ impl<T: Render<Color>, Color: Copy> Render<Color> for Option<T> {
                 T::render_animated(render_target, source, target, style, domain);
             }
             (_, None) => {}
+            // What has just appeared has nothing to animate from, but is
+            // drawn as an animated tree is, at the domain's time.
             (None, Some(target)) => {
-                target.render(render_target, style);
+                T::render_animated(render_target, target, target, style, domain);
             }
         }
+    }
+
+    fn realization(&self, app_time: core::time::Duration) -> crate::render::Realization {
+        self.as_ref()
+            .map_or(crate::render::Realization::Complete, |view| {
+                view.realization(app_time)
+            })
     }
 }
 

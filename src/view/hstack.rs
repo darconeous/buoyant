@@ -40,6 +40,10 @@ impl<T: LayoutEnvironment> LayoutEnvironment for HorizontalEnvironment<'_, T> {
     fn app_time(&self) -> core::time::Duration {
         self.inner_environment.app_time()
     }
+
+    fn viewport(&self) -> Option<&crate::environment::Viewport> {
+        self.inner_environment.viewport()
+    }
 }
 
 impl<'a, T: LayoutEnvironment> From<&'a T> for HorizontalEnvironment<'a, T> {

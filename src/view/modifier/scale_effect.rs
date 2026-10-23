@@ -1,5 +1,5 @@
 use crate::{
-    environment::LayoutEnvironment,
+    environment::{LayoutEnvironment, ViewportEnvironment},
     event::{EventResult, TouchResult},
     focus::{Seek, SeekResult},
     layout::ResolvedLayout,
@@ -92,9 +92,15 @@ where
     ) -> Self::Renderables {
         let frame = Rectangle::new(Point::zero(), layout.resolved_size.into());
         let anchor = self.anchor.in_view_bounds(&frame);
+        // Scaled content is not where a viewport would say it is.
         render::Transform::new(
-            self.inner
-                .render_tree(&layout.sublayouts, -anchor, env, captures, state),
+            self.inner.render_tree(
+                &layout.sublayouts,
+                -anchor,
+                &ViewportEnvironment::new(env, None),
+                captures,
+                state,
+            ),
             LinearTransform::new(origin + anchor, self.scale),
         )
     }

@@ -28,6 +28,14 @@ pub enum Event {
     /// label how the area lays out text. Views pass it on as they do a
     /// scroll.
     TextArea(TextAreaQuery),
+    /// The app asking for the element with this key to be built, so that a
+    /// request for focus can reach it, as when lazily built content holds it
+    /// but has not built it. Content that holds it answers that it was
+    /// handled, and builds it on the next rebuild. Views pass it on as they
+    /// do a scroll.
+    ///
+    /// Only Buoyant sends it.
+    Realize(FocusKey),
 }
 
 /// How a text area lays out text, asked for by the

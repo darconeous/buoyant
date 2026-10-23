@@ -5,6 +5,7 @@ use core::time::Duration;
 use embedded_touch::{Phase, Touch};
 
 use crate::{
+    environment::{Viewport, ViewportEnvironment},
     event::{Event, EventContext, EventResult, TouchResult},
     focus::{
         DefaultFocus, FocusAction, FocusDirection, FocusGroup, FocusKey, Role, Seek, SeekResult,
@@ -836,9 +837,14 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
         };
 
         let inner_offer = ProposedDimensions::new(inner_width, inner_height);
-        let inner_layout = self
-            .inner
-            .layout(&inner_offer, env, captures, &mut state.inner_state);
+        // The content sees no viewport of an enclosing scroll view: its own
+        // is published while it is built, below.
+        let inner_layout = self.inner.layout(
+            &inner_offer,
+            &ViewportEnvironment::new(env, None),
+            captures,
+            &mut state.inner_state,
+        );
 
         let scroll_view_width: u32 = layout.width.into();
         let scroll_view_height: u32 = layout.height.into();
@@ -907,10 +913,14 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             }
             glide => *glide.insert(Glide::at_rest(inner_origin)),
         };
+        // What is shown of the content, where it is drawn now, which lazy
+        // content builds around.
+        let drawn = glide.at(env.app_time()).0;
+        let viewport = Viewport::new(Rectangle::new(-drawn, scroll_size));
         let inner_render_tree = self.inner.render_tree(
             &inner_layout.sublayouts,
             Point::zero(),
-            env,
+            &ViewportEnvironment::new(env, Some(&viewport)),
             captures,
             &mut state.inner_state,
         );
@@ -922,6 +932,7 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
             Offset::new(origin, (offset, horizontal_bar, vertical_bar)),
             glide,
         )
+        .with_coverage(viewport.realized(), viewport.safe())
     }
 
     #[expect(clippy::too_many_lines)]

@@ -29,6 +29,10 @@ impl<T: AnimatedJoin> AnimatedJoin for Transform<T> {
 }
 
 impl<T: Render<C>, C: Interpolate + Copy> Render<C> for Transform<T> {
+    fn realization(&self, app_time: core::time::Duration) -> crate::render::Realization {
+        self.inner.realization(app_time)
+    }
+
     fn render(
         &self,
         render_target: &mut impl crate::render_target::RenderTarget<ColorFormat = C>,

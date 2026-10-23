@@ -50,9 +50,21 @@ macro_rules! define_branch {
                             $variant::render_animated(render_target, source, target, style, domain);
                         },
                     )+
-                    (_, target) => {
-                        target.render(render_target, style);
-                    }
+                    // A newly chosen branch has nothing to animate from, but
+                    // is drawn as an animated one is, at the domain's time.
+                    $(
+                        (_, Self::$variant(target)) => {
+                            $variant::render_animated(render_target, target, target, style, domain);
+                        },
+                    )+
+                }
+            }
+
+            fn realization(&self, app_time: core::time::Duration) -> crate::render::Realization {
+                match self {
+                    $(
+                        Self::$variant(v) => v.realization(app_time),
+                    )+
                 }
             }
         }

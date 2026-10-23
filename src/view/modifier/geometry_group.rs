@@ -1,5 +1,5 @@
 use crate::{
-    environment::LayoutEnvironment,
+    environment::{LayoutEnvironment, ViewportEnvironment},
     event::{Event, EventResult, TouchResult},
     focus::{Seek, SeekResult, SeekTarget},
     layout::ResolvedLayout,
@@ -71,12 +71,25 @@ where
         captures: &mut Captures,
         state: &mut Self::State,
     ) -> Self::Renderables {
-        // Store the offset, and render subtrees from zero
-        Offset::new(
-            origin,
-            self.inner
-                .render_tree(layout, Point::zero(), env, captures, state),
-        )
+        // Store the offset, and render subtrees from zero, where a viewport
+        // the subtree is shown through is brought into its coordinates.
+        let Some(viewport) = env.viewport() else {
+            return Offset::new(
+                origin,
+                self.inner
+                    .render_tree(layout, Point::zero(), env, captures, state),
+            );
+        };
+        let rebased = viewport.rebased(origin);
+        let subtree = self.inner.render_tree(
+            layout,
+            Point::zero(),
+            &ViewportEnvironment::new(env, Some(&rebased)),
+            captures,
+            state,
+        );
+        viewport.absorb(&rebased, origin);
+        Offset::new(origin, subtree)
     }
 
     fn handle_event(

@@ -4,6 +4,7 @@ mod constrained_movement;
 mod embedded_button;
 mod fling;
 mod follows_focus;
+mod lazy;
 mod nesting;
 mod pinning;
 mod snapping;

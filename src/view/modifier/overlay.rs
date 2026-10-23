@@ -250,7 +250,7 @@ where
                 ),
             },
             // For hit-test events (scroll) and queries, perform DFS
-            Event::Scroll(_) | Event::TextArea(_) => match focus {
+            Event::Scroll(_) | Event::TextArea(_) | Event::Realize(_) => match focus {
                 OverlayFocus::Overlay(_) => {
                     // Start with overlay
                     let overlay_result = self.overlay.handle_event(

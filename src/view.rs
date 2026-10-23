@@ -13,6 +13,7 @@ mod hstack;
 #[cfg(feature = "embedded-graphics")]
 mod image;
 mod lazy;
+pub mod lazy_foreach;
 #[allow(missing_docs)]
 pub mod match_view;
 mod modifier;
@@ -41,6 +42,7 @@ pub use hstack::HStack;
 #[cfg(feature = "embedded-graphics")]
 pub use image::Image;
 pub use lazy::Lazy;
+pub use lazy_foreach::LazyForEach;
 pub use modifier::aspect_ratio;
 pub use modifier::map_event;
 pub use modifier::padding;

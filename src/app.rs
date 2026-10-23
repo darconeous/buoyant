@@ -15,7 +15,7 @@ use crate::{
         Role, RoleSet, Seek, SeekResult, SeekTarget,
     },
     primitives::{Point, Size, geometry::Rectangle, transform::LinearTransform},
-    render::{AnimatedJoin, AnimationDomain, ContentShape, Render},
+    render::{AnimatedJoin, AnimationDomain, ContentShape, Realization, Render},
     render_target::{RenderTarget, SolidBrush, Stroke},
     view::{View, ViewLayout},
 };
@@ -550,10 +550,19 @@ where
         // where it is.
         if let Some(key) = request
             && Some(key) != self.focused_key
-            && self.seek(SeekTarget::Key(key)).is_found()
         {
-            self.move_focus(SeekTarget::Key(key));
-            return true;
+            // Lazily built content may hold the target without having built
+            // it: asked to, it builds it, and the rebuilt view is searched
+            // again. What is found there is the target's own answer.
+            let found = self.seek(SeekTarget::Key(key)).is_found()
+                || (self.realize(key) && {
+                    self.build_target();
+                    self.seek(SeekTarget::Key(key)).is_found()
+                });
+            if found {
+                self.move_focus(SeekTarget::Key(key));
+                return true;
+            }
         }
 
         // Reobtain focus in the group that holds it. When the path it was on
@@ -564,6 +573,25 @@ where
             _ = self.focus_forward_group(self.focus_group);
         }
         captured
+    }
+
+    /// Asks the view to build the element with `key` when it is next built.
+    /// Returns whether anything holds it.
+    fn realize(&mut self, key: FocusKey) -> bool {
+        let context = EventContext::new(self.elapsed).with_roles(self.roles);
+        // Events other than focus events overwrite the focus path they pass
+        // along, so this one is given a copy.
+        let mut focus = self.focus_tree.clone();
+        self.view
+            .handle_event(
+                &Event::Realize(key),
+                &context,
+                self.trees.target_mut(),
+                &mut self.state,
+                &mut self.view_state,
+                &mut focus,
+            )
+            .is_handled()
     }
 
     /// Looks for `target` in the laid-out view.
@@ -666,6 +694,15 @@ where
         T: RenderTarget<ColorFormat = C>,
     {
         self.finalize_view();
+        // Lazily built content is drawn where its scroll view has it now. A
+        // part shown there that was not built is built before it is drawn;
+        // one running short of what is built beyond is rebuilt for the next
+        // frame.
+        match Render::<C>::realization(self.trees.target(), self.elapsed) {
+            Realization::Miss => self.force_rebuild(),
+            Realization::Refill => self.requires_rebuild = true,
+            Realization::Complete => {}
+        }
 
         let domain = AnimationDomain::top_level(self.elapsed);
         Render::render_animated(

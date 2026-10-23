@@ -82,6 +82,10 @@ impl<T: AnimatedJoin, U: PartialEq + Clone> AnimatedJoin for Animate<T, U> {
 }
 
 impl<C, T: Render<C>, U: PartialEq + Clone> Render<C> for Animate<T, U> {
+    fn realization(&self, app_time: core::time::Duration) -> crate::render::Realization {
+        self.subtree.realization(app_time)
+    }
+
     fn render(&self, render_target: &mut impl RenderTarget<ColorFormat = C>, style: &C) {
         self.subtree.render(render_target, style);
     }

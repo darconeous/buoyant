@@ -2,8 +2,9 @@ use core::f32::consts::{LN_2, LOG2_E};
 use core::time::Duration;
 
 use crate::{
+    environment::Span,
     primitives::{Interpolate, Point, Size, geometry::Rectangle},
-    render::{AnimatedJoin, Capsule, ContentShape, IntrinsicShape, Offset, Render},
+    render::{AnimatedJoin, Capsule, ContentShape, IntrinsicShape, Offset, Realization, Render},
     render_target::RenderTarget,
 };
 
@@ -22,6 +23,11 @@ pub struct ScrollRenderable<T> {
     pub(crate) inner: ScrolInner<T>,
     /// How the content moves to its offset, which is where it is headed.
     pub(crate) glide: Glide,
+    /// What lazy content vouched for when it was built, in its coordinates,
+    /// along x then y: wherever the view shows within `realized`, all it
+    /// shows is built, and within `safe`, nothing more needs building.
+    pub(crate) realized: [Span; 2],
+    pub(crate) safe: [Span; 2],
 }
 
 impl<T> ScrollRenderable<T> {
@@ -36,7 +42,27 @@ impl<T> ScrollRenderable<T> {
             inner_size,
             inner,
             glide,
+            realized: [Span::UNBOUNDED; 2],
+            safe: [Span::UNBOUNDED; 2],
         }
+    }
+
+    /// With what the content vouched for when it was built.
+    pub(crate) const fn with_coverage(mut self, realized: [Span; 2], safe: [Span; 2]) -> Self {
+        self.realized = realized;
+        self.safe = safe;
+        self
+    }
+
+    /// What of the content the view shows at `app_time`, in the content's
+    /// coordinates, along x then y.
+    fn visible(&self, app_time: Duration) -> [Span; 2] {
+        let (at, _) = self.glide.at(app_time);
+        let Size { width, height } = self.scroll_size;
+        [
+            Span::new(-at.x, (width as i32).saturating_sub(at.x)),
+            Span::new(-at.y, (height as i32).saturating_sub(at.y)),
+        ]
     }
 
     /// Where the content is headed, which is where it is once it comes to
@@ -102,8 +128,10 @@ impl<T: Render<C>, C: Interpolate + Copy> Render<C> for ScrollRenderable<T> {
             render_target.report_active_animation();
         }
         let origin = Point::interpolate(source.inner.offset, target.inner.offset, domain.factor);
+        // The view moves as one, its window with its content, so that it
+        // shows what it was built to show wherever it is on the way.
         render_target.with_layer(
-            |l| l.clip(&Rectangle::new(target.inner.offset, target.scroll_size)),
+            |l| l.clip(&Rectangle::new(origin, target.scroll_size)),
             |render_target| {
                 render_target.with_layer(
                     |l| l.offset(origin),
@@ -128,6 +156,21 @@ impl<T: Render<C>, C: Interpolate + Copy> Render<C> for ScrollRenderable<T> {
                 );
             },
         );
+    }
+
+    /// Whether what the view shows at `app_time` was built, and whether
+    /// anything nested within it is.
+    fn realization(&self, app_time: Duration) -> Realization {
+        let visible = self.visible(app_time);
+        let within = |spans: &[Span; 2]| spans.iter().zip(&visible).all(|(s, v)| s.contains(*v));
+        let own = if !within(&self.realized) {
+            Realization::Miss
+        } else if !within(&self.safe) {
+            Realization::Refill
+        } else {
+            Realization::Complete
+        };
+        own.max(self.inner().realization(app_time))
     }
 }
 

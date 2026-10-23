@@ -250,7 +250,7 @@ where
                 ),
             },
             // For hit-test events (scroll) and queries, perform DFS back to front
-            Event::Scroll(_) | Event::TextArea(_) => match focus {
+            Event::Scroll(_) | Event::TextArea(_) | Event::Realize(_) => match focus {
                 BackgroundFocus::Background(_) => {
                     // Start with background (back)
                     let background_result = self.background.handle_event(

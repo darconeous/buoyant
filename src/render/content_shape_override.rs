@@ -21,6 +21,10 @@ impl<T: AnimatedJoin> AnimatedJoin for ContentShapeOverride<T> {
 }
 
 impl<T: Render<Color>, Color> Render<Color> for ContentShapeOverride<T> {
+    fn realization(&self, app_time: core::time::Duration) -> crate::render::Realization {
+        self.subtree.realization(app_time)
+    }
+
     fn render(&self, render_target: &mut impl RenderTarget<ColorFormat = Color>, style: &Color) {
         self.subtree.render(render_target, style);
     }

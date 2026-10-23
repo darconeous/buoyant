@@ -75,7 +75,7 @@ impl<I> ItemKeys<I> for Positional {
 
 /// Items are told apart by a key. See [`ForEachView::keyed`].
 #[derive(Debug, Clone, Copy)]
-pub struct Keyed<K>(K);
+pub struct Keyed<K>(pub(crate) K);
 
 impl<I, K: Fn(&I) -> FocusKey> ItemKeys<I> for Keyed<K> {
     fn key(&self, item: &I) -> Option<FocusKey> {
@@ -141,6 +141,10 @@ impl<T: LayoutEnvironment, D: ForEachDirection> LayoutEnvironment for ForEachEnv
 
     fn app_time(&self) -> core::time::Duration {
         self.inner_environment.app_time()
+    }
+
+    fn viewport(&self) -> Option<&crate::environment::Viewport> {
+        self.inner_environment.viewport()
     }
 }
 
@@ -292,10 +296,10 @@ where
 /// Which item of a [`ForEach`] holds focus, and the focus within it.
 #[derive(Debug, Clone)]
 pub struct Focus<T: DefaultFocus> {
-    index: usize,
+    pub(crate) index: usize,
     /// The focused item's key, which finds it again when the items change.
-    key: Option<FocusKey>,
-    tree: T,
+    pub(crate) key: Option<FocusKey>,
+    pub(crate) tree: T,
 }
 
 impl<T: DefaultFocus> DefaultFocus for Focus<T> {

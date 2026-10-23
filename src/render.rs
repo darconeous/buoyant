@@ -22,6 +22,7 @@ mod empty;
 mod hint_background;
 pub mod image;
 mod lazy;
+mod lazy_rows;
 mod offset;
 mod one_of;
 mod opacity;
@@ -41,6 +42,7 @@ pub use content_shape_override::ContentShapeOverride;
 pub use hint_background::HintBackground;
 pub use image::Image;
 pub use lazy::Lazy;
+pub use lazy_rows::{LazyRows, RowId};
 pub use offset::Offset;
 pub use one_of::{OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, OneOf9, OneOf10};
 pub use opacity::Opacity;
@@ -77,6 +79,31 @@ pub trait Render<Color>: AnimatedJoin + IntrinsicShape {
         style: &Color,
         domain: &AnimationDomain,
     );
+
+    /// Whether everything this tree shows when drawn at `app_time` was
+    /// built.
+    ///
+    /// Only scroll views holding lazily built content answer anything but
+    /// [`Realization::Complete`]. Nodes with children answer the worst of
+    /// their children's answers.
+    fn realization(&self, app_time: Duration) -> Realization {
+        _ = app_time;
+        Realization::Complete
+    }
+}
+
+/// How much of what a render tree shows was built, from best to worst.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum Realization {
+    /// Everything shown is built.
+    #[default]
+    Complete,
+    /// Everything shown is built, but little beyond: the next frame should
+    /// be drawn from a rebuilt tree.
+    Refill,
+    /// Something shown was not built: the tree must be rebuilt before it is
+    /// drawn.
+    Miss,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

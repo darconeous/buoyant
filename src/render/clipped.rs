@@ -26,6 +26,10 @@ impl<T: AnimatedJoin> AnimatedJoin for Clipped<T> {
 }
 
 impl<T: Render<C>, C: Interpolate + Copy> Render<C> for Clipped<T> {
+    fn realization(&self, app_time: core::time::Duration) -> crate::render::Realization {
+        self.subtree.realization(app_time)
+    }
+
     fn render(&self, render_target: &mut impl RenderTarget<ColorFormat = C>, style: &C) {
         render_target.with_layer(
             |l| l.clip(&self.clip_rect),

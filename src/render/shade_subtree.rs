@@ -25,6 +25,10 @@ impl<C: Interpolate + Copy, T: AnimatedJoin> AnimatedJoin for ShadeSubtree<C, T>
 }
 
 impl<C: Interpolate + Copy, T: Render<C>> Render<C> for ShadeSubtree<C, T> {
+    fn realization(&self, app_time: core::time::Duration) -> crate::render::Realization {
+        self.subtree.realization(app_time)
+    }
+
     fn render(&self, render_target: &mut impl RenderTarget<ColorFormat = C>, _: &C) {
         self.subtree.render(render_target, &self.style);
     }

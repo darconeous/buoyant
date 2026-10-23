@@ -25,6 +25,10 @@ impl<T: AnimatedJoin, C: Interpolate + Copy> AnimatedJoin for HintBackground<T, 
 }
 
 impl<T: Render<C>, C: Interpolate + Copy> Render<C> for HintBackground<T, C> {
+    fn realization(&self, app_time: core::time::Duration) -> crate::render::Realization {
+        self.subtree.realization(app_time)
+    }
+
     fn render(&self, render_target: &mut impl RenderTarget<ColorFormat = C>, style: &C) {
         let color = self.color;
         render_target.with_layer(

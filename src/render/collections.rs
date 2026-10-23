@@ -146,6 +146,11 @@ macro_rules! impl_render_for_collections {
                     );
                 )+
             }
+
+            fn realization(&self, app_time: core::time::Duration) -> crate::render::Realization {
+                crate::render::Realization::Complete
+                    $(.max(self.$n.realization(app_time)))+
+            }
         }
     };
 }
@@ -183,11 +188,19 @@ impl<Color, T: Render<Color>> Render<Color> for [T] {
             .for_each(|(source, target)| {
                 T::render_animated(render_target, source, target, style, domain);
             });
-        // Items added since the source have nothing to animate from, and
-        // are drawn as they are. Items since removed are gone.
+        // Items added since the source have nothing to animate from, but
+        // are drawn as animated ones are, at the domain's time. Items since
+        // removed are gone.
         for item in target.iter().skip(source.len()) {
-            item.render(render_target, style);
+            T::render_animated(render_target, item, item, style, domain);
         }
+    }
+
+    fn realization(&self, app_time: core::time::Duration) -> crate::render::Realization {
+        self.iter()
+            .map(|item| item.realization(app_time))
+            .max()
+            .unwrap_or_default()
     }
 }
 
@@ -207,6 +220,11 @@ impl<Color, T: Render<Color>, const N: usize> Render<Color> for [T; N] {
     ) {
         <[T]>::render_animated(render_target, source, target, style, domain);
     }
+
+    #[inline]
+    fn realization(&self, app_time: core::time::Duration) -> crate::render::Realization {
+        self.as_slice().realization(app_time)
+    }
 }
 
 impl<Color, T: Render<Color>, const N: usize> Render<Color> for heapless::Vec<T, N> {
@@ -224,6 +242,11 @@ impl<Color, T: Render<Color>, const N: usize> Render<Color> for heapless::Vec<T,
         domain: &AnimationDomain,
     ) {
         <[T]>::render_animated(render_target, source, target, style, domain);
+    }
+
+    #[inline]
+    fn realization(&self, app_time: core::time::Duration) -> crate::render::Realization {
+        self.as_slice().realization(app_time)
     }
 }
 
@@ -353,7 +376,8 @@ mod render_order_tests {
 
         let domain = AnimationDomain::new(128, std::time::Duration::from_secs(1));
         Render::render_animated(&mut mock_target, &source, &target, &'x', &domain);
-        assert_eq!(*order.borrow(), vec![0, 100, 1, 101, 102]);
+        // An added item is drawn animated from itself.
+        assert_eq!(*order.borrow(), vec![0, 100, 1, 101, 102, 102]);
 
         // Items removed since the source are not drawn.
         order.borrow_mut().clear();

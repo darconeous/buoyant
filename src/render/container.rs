@@ -30,6 +30,10 @@ impl<T: AnimatedJoin> AnimatedJoin for Container<T> {
 }
 
 impl<T: Render<Color>, Color> Render<Color> for Container<T> {
+    fn realization(&self, app_time: core::time::Duration) -> crate::render::Realization {
+        self.child.realization(app_time)
+    }
+
     fn render(&self, render_target: &mut impl RenderTarget<ColorFormat = Color>, style: &Color) {
         self.child.render(render_target, style);
     }
