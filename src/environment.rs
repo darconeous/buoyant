@@ -14,6 +14,13 @@ pub trait LayoutEnvironment {
     fn viewport(&self) -> Option<&Viewport> {
         None
     }
+    /// Where content whose rows are placed by their measured heights tells
+    /// the scroll view laying it out how far what it shows moved, in the
+    /// content's coordinates. `None` outside a scroll view, and wherever
+    /// content is laid out but may not be drawn.
+    fn drift(&self) -> Option<&Drift> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -97,6 +104,82 @@ impl Span {
     }
 }
 
+/// How far content placed by its rows' measured heights moved since it was
+/// last built: rows measured, changed, added, or removed above what it
+/// shows move what it shows within the content.
+///
+/// A scroll view publishes one while it lays out and builds its content.
+/// The content reports the move as it is laid out, and the scroll view
+/// moves its offset with it, so what is shown stays where it was. The
+/// content confirms the move as it is built: content laid out but not built
+/// confirms nothing, and the scroll view then lays its content out again
+/// without the move.
+#[derive(Debug, Default)]
+pub struct Drift {
+    /// The move reported while laying out, along each axis, x then y.
+    reported: Cell<[Option<i32>; 2]>,
+    /// The move confirmed while building.
+    confirmed: Cell<[Option<i32>; 2]>,
+    /// Content placed by measured heights was laid out, moved or not.
+    measured: Cell<bool>,
+}
+
+impl Drift {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            reported: Cell::new([None; 2]),
+            confirmed: Cell::new([None; 2]),
+            measured: Cell::new(false),
+        }
+    }
+
+    /// Reports, while laying out, that what is shown moved `by` along
+    /// `axis`. Laid out again, content reports the same move again.
+    pub fn report(&self, axis: LayoutDirection, by: i32) {
+        Self::set(&self.reported, axis, by);
+        self.measured.set(true);
+    }
+
+    /// Confirms, while building, the move reported along `axis`.
+    pub fn confirm(&self, axis: LayoutDirection, by: i32) {
+        Self::set(&self.confirmed, axis, by);
+    }
+
+    fn set(cell: &Cell<[Option<i32>; 2]>, axis: LayoutDirection, by: i32) {
+        let mut moves = cell.get();
+        let i = Viewport::index(axis);
+        debug_assert!(
+            moves[i].is_none_or(|was| was == by),
+            "one content placed by measured heights per scroll view"
+        );
+        moves[i] = Some(by);
+        cell.set(moves);
+    }
+
+    /// The move reported while laying out.
+    #[must_use]
+    pub fn reported(&self) -> Point {
+        Self::point(self.reported.get())
+    }
+
+    /// The move confirmed while building.
+    #[must_use]
+    pub fn confirmed(&self) -> Point {
+        Self::point(self.confirmed.get())
+    }
+
+    /// Whether content placed by measured heights was laid out.
+    #[must_use]
+    pub fn measured(&self) -> bool {
+        self.measured.get()
+    }
+
+    fn point(moves: [Option<i32>; 2]) -> Point {
+        Point::new(moves[0].unwrap_or(0), moves[1].unwrap_or(0))
+    }
+}
+
 /// What a scroll view shows of its content, and what of the content's lazily
 /// built parts is there to show.
 ///
@@ -114,6 +197,9 @@ pub struct Viewport {
     /// Within `realized`: while the visible part stays within these, nothing
     /// needs to be built.
     safe: Cell<[Span; 2]>,
+    /// Along each axis, whether the content holds to its end: pinned there,
+    /// or too short to fill the view and placed at its end.
+    end_gravity: [bool; 2],
 }
 
 impl Viewport {
@@ -124,7 +210,21 @@ impl Viewport {
             visible,
             realized: Cell::new([Span::UNBOUNDED; 2]),
             safe: Cell::new([Span::UNBOUNDED; 2]),
+            end_gravity: [false; 2],
         }
+    }
+
+    /// The same, holding to its end along the axes `gravity` says, x then y.
+    #[must_use]
+    pub const fn with_end_gravity(mut self, gravity: [bool; 2]) -> Self {
+        self.end_gravity = gravity;
+        self
+    }
+
+    /// Whether the content holds to its end along `axis`.
+    #[must_use]
+    pub const fn end_gravity(&self, axis: LayoutDirection) -> bool {
+        self.end_gravity[Self::index(axis)]
     }
 
     /// The part shown.
@@ -178,6 +278,7 @@ impl Viewport {
             self.visible.origin - origin,
             self.visible.size,
         ))
+        .with_end_gravity(self.end_gravity)
     }
 
     /// Takes on what was vouched for in `rebased`, a viewport made by
@@ -201,15 +302,32 @@ impl Viewport {
     }
 }
 
-/// Another environment with `viewport` in place of its own.
+/// Another environment with `viewport` and `drift` in place of its own.
 pub(crate) struct ViewportEnvironment<'a, E> {
     inner: &'a E,
     viewport: Option<&'a Viewport>,
+    drift: Option<&'a Drift>,
 }
 
 impl<'a, E> ViewportEnvironment<'a, E> {
-    pub(crate) const fn new(inner: &'a E, viewport: Option<&'a Viewport>) -> Self {
-        Self { inner, viewport }
+    pub(crate) const fn new(
+        inner: &'a E,
+        viewport: Option<&'a Viewport>,
+        drift: Option<&'a Drift>,
+    ) -> Self {
+        Self {
+            inner,
+            viewport,
+            drift,
+        }
+    }
+}
+
+impl<'a, E: LayoutEnvironment> ViewportEnvironment<'a, E> {
+    /// `inner` as it is, except that content laid out in it reports no
+    /// move: it may not be built.
+    pub(crate) fn without_drift(inner: &'a E) -> Self {
+        Self::new(inner, inner.viewport(), None)
     }
 }
 
@@ -224,5 +342,9 @@ impl<E: LayoutEnvironment> LayoutEnvironment for ViewportEnvironment<'_, E> {
 
     fn viewport(&self) -> Option<&Viewport> {
         self.viewport
+    }
+
+    fn drift(&self) -> Option<&Drift> {
+        self.drift
     }
 }

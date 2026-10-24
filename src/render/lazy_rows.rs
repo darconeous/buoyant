@@ -37,6 +37,12 @@ pub struct LazyRows<T, const N: usize> {
     /// list vouched for may no longer hold: the tree must be rebuilt before
     /// it is drawn again.
     pub(crate) stale: bool,
+    /// Rows placed by their measured heights came out other than the list
+    /// was laid out for: the next frame lays it out again.
+    pub(crate) drifted: bool,
+    /// The rows moved, with what they show, into new coordinates since the
+    /// last build: they take their places at once rather than sliding.
+    pub(crate) rebased: bool,
 }
 
 impl<T, const N: usize> LazyRows<T, N> {
@@ -47,6 +53,8 @@ impl<T, const N: usize> LazyRows<T, N> {
             width,
             visible,
             stale: false,
+            drifted: false,
+            rebased: false,
         }
     }
 
@@ -66,11 +74,12 @@ impl<T, const N: usize> LazyRows<T, N> {
 }
 
 /// A list that moved takes its place at once, its rows with it, so that the
-/// rows it built are where it is drawn. Rows animate between their places
-/// in a list that stays put.
+/// rows it built are where it is drawn, and so do rows that moved into new
+/// coordinates with what they show. Rows animate between their places in a
+/// list that stays put.
 impl<T: AnimatedJoin, const N: usize> AnimatedJoin for LazyRows<T, N> {
     fn join_from(&mut self, source: &Self, domain: &AnimationDomain) {
-        if source.origin != self.origin {
+        if source.origin != self.origin || self.rebased {
             return;
         }
         for (id, _, tree) in &mut self.rows {
@@ -98,7 +107,7 @@ impl<C, T: Render<C>, const N: usize> Render<C> for LazyRows<T, N> {
         // A row built since the source, or in a list that moved, is drawn as
         // an animated one is, at the domain's time, from itself. Rows since
         // dropped are gone.
-        let moved = source.origin != target.origin;
+        let moved = source.origin != target.origin || target.rebased;
         for (id, _, tree) in &target.rows {
             let from = Self::paired(source, *id).filter(|_| !moved).unwrap_or(tree);
             T::render_animated(render_target, from, tree, style, domain);
@@ -109,11 +118,15 @@ impl<C, T: Render<C>, const N: usize> Render<C> for LazyRows<T, N> {
         if self.stale {
             return Realization::Miss;
         }
+        let own = if self.drifted {
+            Realization::Refill
+        } else {
+            Realization::Complete
+        };
         self.rows
             .iter()
             .map(|(.., tree)| tree.realization(app_time))
-            .max()
-            .unwrap_or_default()
+            .fold(own, Ord::max)
     }
 }
 

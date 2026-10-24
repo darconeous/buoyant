@@ -93,7 +93,9 @@ impl<Captures: ?Sized, T: Clone, V: ViewLayout<()>> ViewLayout<Captures> for Laz
     ) -> ResolvedLayout<Self::Sublayout> {
         let view = (self.build)(&self.data);
         let mut state = view.build_state(&mut ());
-        let size = view.layout(offer, env, &mut (), &mut state).resolved_size;
+        // Drawn later, apart from the scroll view: it may not move it.
+        let env = crate::environment::ViewportEnvironment::without_drift(env);
+        let size = view.layout(offer, &env, &mut (), &mut state).resolved_size;
         ResolvedLayout {
             resolved_size: size,
             sublayouts: size,

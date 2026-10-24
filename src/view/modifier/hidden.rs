@@ -60,7 +60,9 @@ where
         captures: &mut Captures,
         state: &mut Self::State,
     ) -> ResolvedLayout<Self::Sublayout> {
-        let layout = self.child.layout(offer, env, captures, state);
+        // Laid out, never drawn: nothing in it may move the scroll view.
+        let env = crate::environment::ViewportEnvironment::without_drift(env);
+        let layout = self.child.layout(offer, &env, captures, state);
         ResolvedLayout {
             sublayouts: (),
             resolved_size: layout.resolved_size,

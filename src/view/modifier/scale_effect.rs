@@ -74,7 +74,13 @@ where
         captures: &mut Captures,
         state: &mut Self::State,
     ) -> ResolvedLayout<Self::Sublayout> {
-        let inner_layout = self.inner.layout(offer, env, captures, state);
+        // Scaled content is not where a viewport would say it is.
+        let inner_layout = self.inner.layout(
+            offer,
+            &ViewportEnvironment::new(env, None, None),
+            captures,
+            state,
+        );
 
         ResolvedLayout {
             resolved_size: inner_layout.resolved_size,
@@ -97,7 +103,7 @@ where
             self.inner.render_tree(
                 &layout.sublayouts,
                 -anchor,
-                &ViewportEnvironment::new(env, None),
+                &ViewportEnvironment::new(env, None, None),
                 captures,
                 state,
             ),

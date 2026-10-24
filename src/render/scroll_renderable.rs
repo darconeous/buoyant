@@ -303,6 +303,63 @@ impl Glide {
         };
     }
 
+    /// Moves the content's whole path by `by`: where it was, where it is,
+    /// and where it is headed, for content whose coordinates moved under it.
+    pub fn shift(&mut self, by: Point) {
+        let scale = Self::SCALE as i32;
+        self.to += by;
+        self.from[0] = self.from[0].saturating_add(by.x.saturating_mul(scale));
+        self.from[1] = self.from[1].saturating_add(by.y.saturating_mul(scale));
+    }
+
+    /// Where flung content would coast to rest with nothing in its way, or
+    /// `None` for content that was not flung.
+    #[must_use]
+    pub fn coast_rest(&self) -> Option<Point> {
+        if self.coast == 0 {
+            return None;
+        }
+        let seconds = f32::from(self.coast) / 1000.0;
+        let rest = |axis: usize| {
+            round((float(self.from[axis]) + float(self.velocity[axis]) * seconds) / Self::SCALE)
+        };
+        Some(Point::new(rest(0), rest(1)))
+    }
+
+    /// Lets flung content coast on to `to`, a bound that moved, from where it
+    /// is at `now`. Short of a bound, coasting content is where it is
+    /// whatever the bound, so a bound ahead of it takes over without a jerk;
+    /// content already at its bound, or past `to`, springs there as
+    /// [`Glide::head_for`] sends it.
+    pub fn retarget_coast(&mut self, to: Point, now: Duration, settle: Duration) {
+        if to == self.to {
+            return;
+        }
+        let (at, _) = self.sample(now);
+        let elapsed = now
+            .saturating_sub(Duration::from_millis(self.start))
+            .as_secs_f32();
+        let rate = if self.coast == 0 {
+            0.0
+        } else {
+            1000.0 / f32::from(self.coast)
+        };
+        let decay = exp_neg(rate * elapsed);
+        let target = [float(to.x), float(to.y)];
+        let coasting = rate > 0.0
+            && (0..2).all(|axis| {
+                let velocity = float(self.velocity[axis]) / Self::SCALE;
+                let free = float(self.from[axis]) / Self::SCALE + velocity / rate * (1.0 - decay);
+                // Still on the coast, and the new rest is ahead.
+                abs(at[axis] - free) < 0.5 && (target[axis] - at[axis]) * velocity >= 0.0
+            });
+        if coasting {
+            self.to = to;
+        } else {
+            self.head_for(to, now, settle);
+        }
+    }
+
     /// Where to draw the content at `now`, and whether it is still moving.
     #[must_use]
     pub fn at(&self, now: Duration) -> (Point, bool) {

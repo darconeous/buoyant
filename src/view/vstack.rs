@@ -42,6 +42,10 @@ impl<T: LayoutEnvironment> LayoutEnvironment for VerticalEnvironment<'_, T> {
     fn viewport(&self) -> Option<&crate::environment::Viewport> {
         self.inner_environment.viewport()
     }
+
+    fn drift(&self) -> Option<&crate::environment::Drift> {
+        self.inner_environment.drift()
+    }
 }
 
 impl<'a, T: LayoutEnvironment> From<&'a T> for VerticalEnvironment<'a, T> {

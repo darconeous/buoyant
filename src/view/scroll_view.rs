@@ -5,7 +5,7 @@ use core::time::Duration;
 use embedded_touch::{Phase, Touch};
 
 use crate::{
-    environment::{Viewport, ViewportEnvironment},
+    environment::{Drift, Viewport, ViewportEnvironment},
     event::{Event, EventContext, EventResult, TouchResult},
     focus::{
         DefaultFocus, FocusAction, FocusDirection, FocusGroup, FocusKey, Role, Seek, SeekResult,
@@ -755,6 +755,233 @@ impl<Inner> ScrollView<Inner> {
     }
 }
 
+impl<Inner> ScrollView<Inner> {
+    /// Lays the content out and builds the view, moving it with the content
+    /// by what the content reports to `drift`.
+    #[expect(clippy::too_many_lines)]
+    fn build<Captures>(
+        &self,
+        layout: Dimensions,
+        origin: Point,
+        env: &impl crate::environment::LayoutEnvironment,
+        captures: &mut Captures,
+        state: &mut ScrollViewState<Inner::State>,
+        drift: Option<&Drift>,
+    ) -> ScrollRenderable<Inner::Renderables>
+    where
+        Inner: ViewLayout<Captures>,
+    {
+        let (horizontal_padding, vertical_padding) = if !self.bar_config.overlaps_content
+            && self.bar_config.visibility == ScrollBarVisibility::Always
+        {
+            let bar_space = self.bar_config.padding * 2 + self.bar_config.width;
+            match self.direction {
+                ScrollDirection::Vertical => (bar_space, 0),
+                ScrollDirection::Horizontal => (0, bar_space),
+                ScrollDirection::Both => (bar_space, bar_space),
+            }
+        } else {
+            (0, 0)
+        };
+
+        let (inner_width, inner_height) = match self.direction {
+            ScrollDirection::Vertical => (
+                ProposedDimension::Exact(Into::<u32>::into(layout.width) - horizontal_padding),
+                ProposedDimension::Compact,
+            ),
+            ScrollDirection::Horizontal => (
+                ProposedDimension::Compact,
+                ProposedDimension::Exact(Into::<u32>::into(layout.height) - vertical_padding),
+            ),
+            ScrollDirection::Both => (ProposedDimension::Compact, ProposedDimension::Compact),
+        };
+
+        let inner_offer = ProposedDimensions::new(inner_width, inner_height);
+        // The content sees no viewport of an enclosing scroll view: its own
+        // is published while it is built, below.
+        let inner_layout = self.inner.layout(
+            &inner_offer,
+            &ViewportEnvironment::new(env, None, drift),
+            captures,
+            &mut state.inner_state,
+        );
+        // What the content shows moved within it: the view moves with it,
+        // wherever it is on its way, so what it shows stays where it was.
+        let moved = drift.map_or(Point::zero(), Drift::reported);
+        if moved != Point::zero() {
+            // Headed for the content's start, the view stays headed there:
+            // the start does not move with what is shown.
+            let to_start = [state.scroll_offset.x == 0, state.scroll_offset.y == 0];
+            state.scroll_offset -= moved;
+            if state.interaction == ScrollInteraction::Idle {
+                if to_start[0] {
+                    state.scroll_offset.x = 0;
+                }
+                if to_start[1] {
+                    state.scroll_offset.y = 0;
+                }
+            }
+            if let Some(glide) = &mut state.glide {
+                glide.shift(-moved);
+            }
+            state.focused_shape = state.focused_shape.clone().with_offset(moved);
+        }
+        let measured = drift.is_some_and(Drift::measured);
+
+        let scroll_view_width: u32 = layout.width.into();
+        let scroll_view_height: u32 = layout.height.into();
+        let inner_view_width: u32 = inner_layout.resolved_size.width.0;
+        let inner_view_height: u32 = inner_layout.resolved_size.height.0;
+        let scroll_size = Size::new(scroll_view_width, scroll_view_height);
+        let inner_size = Size::new(inner_view_width, inner_view_height);
+
+        let permitted_offset_x = inner_view_width.saturating_sub(scroll_view_width) as i32;
+        let permitted_offset_y = inner_view_height.saturating_sub(scroll_view_height) as i32;
+
+        // Asked for the end since the last layout: pinned there, as if the
+        // content had been scrolled there by hand.
+        if state.interaction == ScrollInteraction::Idle
+            && self.end_generation != state.end_generation
+        {
+            state.end_generation = self.end_generation;
+            state.content_pinning = self.end_pinning();
+            state.follows_focus = false;
+        }
+
+        // Adjust scroll offset if pinning is enabled
+        if state.interaction == ScrollInteraction::Idle
+            && let ContentPinning::Pinned(horizontal, vertical) = state.content_pinning
+        {
+            if horizontal {
+                state.scroll_offset.x = -permitted_offset_x;
+            }
+            if vertical {
+                state.scroll_offset.y = -permitted_offset_y;
+            }
+        }
+
+        // Make sure the inner view is within the scroll view's bounds, mutate scroll
+        // offset to correct only if not dragging
+        let is_dragging;
+        let subview_offset = match state.interaction {
+            ScrollInteraction::Dragging { .. } => {
+                // The offset should be set correctly based on the scroll direction
+                // in the event handler, don't bother checking it here
+                is_dragging = true;
+                Self::dragged(state.scroll_offset, scroll_size, inner_size)
+            }
+            ScrollInteraction::Idle => {
+                is_dragging = false;
+
+                // Content placed by measured heights learns its size as it
+                // comes into view: a fling coasts on to where it would stop,
+                // within the bounds as they are now, not those it set out with.
+                if measured
+                    && state.content_pinning == ContentPinning::Floating
+                    && let Some(glide) = &state.glide
+                    && glide.is_coasting(env.app_time())
+                    && let Some(rest) = glide.coast_rest()
+                {
+                    state.scroll_offset = rest - self.content_shift(scroll_size, inner_size);
+                }
+                state.scroll_offset.x = state.scroll_offset.x.clamp(-permitted_offset_x, 0);
+                state.scroll_offset.y = state.scroll_offset.y.clamp(-permitted_offset_y, 0);
+
+                state.scroll_offset
+            }
+        };
+
+        let (horizontal_bar, vertical_bar) =
+            self.scroll_bars(Point::zero(), scroll_size, inner_size, subview_offset);
+
+        let shift = self.content_shift(scroll_size, inner_size);
+        let inner_origin = subview_offset + shift;
+        // Dragged, the content follows the touch; otherwise it glides to
+        // where it is headed, from wherever it was on its way somewhere else.
+        // Settled before the content is built, so that the content, which can
+        // be large, is not held on the stack across the call.
+        let glide = match &mut state.glide {
+            Some(glide) if !is_dragging && measured && glide.is_coasting(env.app_time()) => {
+                glide.retarget_coast(inner_origin, env.app_time(), self.glide_time);
+                *glide
+            }
+            Some(glide) if !is_dragging => {
+                glide.head_for(inner_origin, env.app_time(), self.glide_time);
+                *glide
+            }
+            glide => *glide.insert(Glide::at_rest(inner_origin)),
+        };
+        // What is shown of the content, where it is drawn now, which lazy
+        // content builds around.
+        let drawn = glide.at(env.app_time()).0;
+        let (pinned_x, pinned_y) = match state.content_pinning {
+            ContentPinning::Pinned(horizontal, vertical) => (horizontal, vertical),
+            ContentPinning::Floating => (false, false),
+        };
+        let viewport = Viewport::new(Rectangle::new(-drawn, scroll_size))
+            .with_end_gravity([pinned_x || shift.x > 0, pinned_y || shift.y > 0]);
+        let inner_render_tree = self.inner.render_tree(
+            &inner_layout.sublayouts,
+            Point::zero(),
+            &ViewportEnvironment::new(env, Some(&viewport), drift),
+            captures,
+            &mut state.inner_state,
+        );
+        let offset = Offset::new(inner_origin, inner_render_tree);
+
+        ScrollRenderable::new(
+            scroll_size,
+            inner_size,
+            Offset::new(origin, (offset, horizontal_bar, vertical_bar)),
+            glide,
+        )
+        .with_coverage(viewport.realized(), viewport.safe())
+    }
+}
+
+/// The view's own state, without its content's: what it is put back to when
+/// content that reported a move was not built.
+#[derive(Debug, Clone)]
+struct Saved {
+    scroll_offset: Point,
+    interaction: ScrollInteraction,
+    content_pinning: ContentPinning,
+    follows_focus: bool,
+    focused_key: Option<FocusKey>,
+    focused_shape: ContentShape,
+    focused_group: FocusGroup,
+    glide: Option<Glide>,
+    end_generation: Option<u32>,
+}
+
+impl Saved {
+    fn of<S>(state: &ScrollViewState<S>) -> Self {
+        Self {
+            scroll_offset: state.scroll_offset,
+            interaction: state.interaction.clone(),
+            content_pinning: state.content_pinning,
+            follows_focus: state.follows_focus,
+            focused_key: state.focused_key,
+            focused_shape: state.focused_shape.clone(),
+            focused_group: state.focused_group,
+            glide: state.glide,
+            end_generation: state.end_generation,
+        }
+    }
+
+    fn restore<S>(&self, state: &mut ScrollViewState<S>) {
+        state.scroll_offset = self.scroll_offset;
+        state.interaction = self.interaction.clone();
+        state.content_pinning = self.content_pinning;
+        state.follows_focus = self.follows_focus;
+        state.focused_key = self.focused_key;
+        state.focused_shape = self.focused_shape.clone();
+        state.focused_group = self.focused_group;
+        state.glide = self.glide;
+        state.end_generation = self.end_generation;
+    }
+}
+
 impl<Inner: ViewMarker> ViewMarker for ScrollView<Inner> {
     type Renderables = ScrollRenderable<Inner::Renderables>;
     type Transition = Opacity;
@@ -811,128 +1038,34 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
         captures: &mut Captures,
         state: &mut Self::State,
     ) -> Self::Renderables {
-        let (horizontal_padding, vertical_padding) = if !self.bar_config.overlaps_content
-            && self.bar_config.visibility == ScrollBarVisibility::Always
-        {
-            let bar_space = self.bar_config.padding * 2 + self.bar_config.width;
-            match self.direction {
-                ScrollDirection::Vertical => (bar_space, 0),
-                ScrollDirection::Horizontal => (0, bar_space),
-                ScrollDirection::Both => (bar_space, bar_space),
+        // Content placed by measured heights reports how far what it shows
+        // moved, and the view moves with it. Content laid out to move the
+        // view but not built confirms nothing: the view is then as it was,
+        // and is laid out again without the move. One tree is held at a time.
+        let saved = Saved::of(state);
+        let mut moves = true;
+        loop {
+            let drift = Drift::new();
+            let tree = self.build(
+                *layout,
+                origin,
+                env,
+                captures,
+                state,
+                moves.then_some(&drift),
+            );
+            if !moves || drift.confirmed() == drift.reported() {
+                return tree;
             }
-        } else {
-            (0, 0)
-        };
-
-        let (inner_width, inner_height) = match self.direction {
-            ScrollDirection::Vertical => (
-                ProposedDimension::Exact(Into::<u32>::into(layout.width) - horizontal_padding),
-                ProposedDimension::Compact,
-            ),
-            ScrollDirection::Horizontal => (
-                ProposedDimension::Compact,
-                ProposedDimension::Exact(Into::<u32>::into(layout.height) - vertical_padding),
-            ),
-            ScrollDirection::Both => (ProposedDimension::Compact, ProposedDimension::Compact),
-        };
-
-        let inner_offer = ProposedDimensions::new(inner_width, inner_height);
-        // The content sees no viewport of an enclosing scroll view: its own
-        // is published while it is built, below.
-        let inner_layout = self.inner.layout(
-            &inner_offer,
-            &ViewportEnvironment::new(env, None),
-            captures,
-            &mut state.inner_state,
-        );
-
-        let scroll_view_width: u32 = layout.width.into();
-        let scroll_view_height: u32 = layout.height.into();
-        let inner_view_width: u32 = inner_layout.resolved_size.width.0;
-        let inner_view_height: u32 = inner_layout.resolved_size.height.0;
-        let scroll_size = Size::new(scroll_view_width, scroll_view_height);
-        let inner_size = Size::new(inner_view_width, inner_view_height);
-
-        let permitted_offset_x = inner_view_width.saturating_sub(scroll_view_width) as i32;
-        let permitted_offset_y = inner_view_height.saturating_sub(scroll_view_height) as i32;
-
-        // Asked for the end since the last layout: pinned there, as if the
-        // content had been scrolled there by hand.
-        if state.interaction == ScrollInteraction::Idle
-            && self.end_generation != state.end_generation
-        {
-            state.end_generation = self.end_generation;
-            state.content_pinning = self.end_pinning();
-            state.follows_focus = false;
+            debug_assert!(
+                false,
+                "content laid out to move a scroll view was not built: a view that lays out \
+                 content it may not draw must not pass it the drift"
+            );
+            drop(tree);
+            saved.restore(state);
+            moves = false;
         }
-
-        // Adjust scroll offset if pinning is enabled
-        if state.interaction == ScrollInteraction::Idle
-            && let ContentPinning::Pinned(horizontal, vertical) = state.content_pinning
-        {
-            if horizontal {
-                state.scroll_offset.x = -permitted_offset_x;
-            }
-            if vertical {
-                state.scroll_offset.y = -permitted_offset_y;
-            }
-        }
-
-        // Make sure the inner view is within the scroll view's bounds, mutate scroll
-        // offset to correct only if not dragging
-        let is_dragging;
-        let subview_offset = match state.interaction {
-            ScrollInteraction::Dragging { .. } => {
-                // The offset should be set correctly based on the scroll direction
-                // in the event handler, don't bother checking it here
-                is_dragging = true;
-                Self::dragged(state.scroll_offset, scroll_size, inner_size)
-            }
-            ScrollInteraction::Idle => {
-                is_dragging = false;
-
-                state.scroll_offset.x = state.scroll_offset.x.clamp(-permitted_offset_x, 0);
-                state.scroll_offset.y = state.scroll_offset.y.clamp(-permitted_offset_y, 0);
-
-                state.scroll_offset
-            }
-        };
-
-        let (horizontal_bar, vertical_bar) =
-            self.scroll_bars(Point::zero(), scroll_size, inner_size, subview_offset);
-
-        let inner_origin = subview_offset + self.content_shift(scroll_size, inner_size);
-        // Dragged, the content follows the touch; otherwise it glides to
-        // where it is headed, from wherever it was on its way somewhere else.
-        // Settled before the content is built, so that the content, which can
-        // be large, is not held on the stack across the call.
-        let glide = match &mut state.glide {
-            Some(glide) if !is_dragging => {
-                glide.head_for(inner_origin, env.app_time(), self.glide_time);
-                *glide
-            }
-            glide => *glide.insert(Glide::at_rest(inner_origin)),
-        };
-        // What is shown of the content, where it is drawn now, which lazy
-        // content builds around.
-        let drawn = glide.at(env.app_time()).0;
-        let viewport = Viewport::new(Rectangle::new(-drawn, scroll_size));
-        let inner_render_tree = self.inner.render_tree(
-            &inner_layout.sublayouts,
-            Point::zero(),
-            &ViewportEnvironment::new(env, Some(&viewport)),
-            captures,
-            &mut state.inner_state,
-        );
-        let offset = Offset::new(inner_origin, inner_render_tree);
-
-        ScrollRenderable::new(
-            scroll_size,
-            inner_size,
-            Offset::new(origin, (offset, horizontal_bar, vertical_bar)),
-            glide,
-        )
-        .with_coverage(viewport.realized(), viewport.safe())
     }
 
     #[expect(clippy::too_many_lines)]

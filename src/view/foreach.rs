@@ -146,6 +146,10 @@ impl<T: LayoutEnvironment, D: ForEachDirection> LayoutEnvironment for ForEachEnv
     fn viewport(&self) -> Option<&crate::environment::Viewport> {
         self.inner_environment.viewport()
     }
+
+    fn drift(&self) -> Option<&crate::environment::Drift> {
+        self.inner_environment.drift()
+    }
 }
 
 impl<'a, T: LayoutEnvironment, D> ForEachEnvironment<'a, T, D> {

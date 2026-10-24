@@ -276,9 +276,11 @@ macro_rules! impl_view_that_fits {
                     let slot = state
                         .$idx
                         .get_or_insert_with(|| self.choices.$idx.build_state(captures));
-                    // The last choice is used when nothing else fits.
+                    // The last choice is used when nothing else fits. A choice
+                    // tried may not be drawn, so it may not move a scroll view.
                     let fits = $idx == $last || {
-                        let layout = self.choices.$idx.layout(&subview_offer, env, captures, slot);
+                        let trial = crate::environment::ViewportEnvironment::without_drift(env);
+                        let layout = self.choices.$idx.layout(&subview_offer, &trial, captures, slot);
                         offer.contains(layout.resolved_size, horizontal, vertical)
                     };
                     if fits {

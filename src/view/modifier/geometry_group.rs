@@ -84,7 +84,7 @@ where
         let subtree = self.inner.render_tree(
             layout,
             Point::zero(),
-            &ViewportEnvironment::new(env, Some(&rebased)),
+            &ViewportEnvironment::new(env, Some(&rebased), env.drift()),
             captures,
             state,
         );

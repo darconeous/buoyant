@@ -5,6 +5,7 @@ mod embedded_button;
 mod fling;
 mod follows_focus;
 mod lazy;
+mod natural;
 mod nesting;
 mod pinning;
 mod snapping;
