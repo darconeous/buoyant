@@ -33,6 +33,13 @@ impl<'a, T> Tracked<'a, T> {
     pub fn mark_changed(&mut self) {
         *self.changed = true;
     }
+
+    /// The value, to change without marking it changed: for a change
+    /// nothing shown depends on, or one whose effect is checked and marked
+    /// with [`mark_changed`](Self::mark_changed) only when it shows.
+    pub fn untracked(&mut self) -> &mut T {
+        self.value
+    }
 }
 
 impl<T> Deref for Tracked<'_, T> {
@@ -86,5 +93,21 @@ impl<T: Ord> Ord for Tracked<'_, T> {
 impl<T: Hash> Hash for Tracked<'_, T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.value.hash(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Tracked;
+
+    #[test]
+    fn a_change_made_untracked_is_not_marked() {
+        let (mut value, mut changed) = (1, false);
+        let mut tracked = Tracked::new(&mut value, &mut changed);
+        *tracked.untracked() = 2;
+        assert!(!tracked.has_changed());
+        *tracked = 3;
+        assert!(tracked.has_changed());
+        assert_eq!(value, 3);
     }
 }

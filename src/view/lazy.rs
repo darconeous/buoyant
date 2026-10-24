@@ -22,7 +22,8 @@ use crate::{
 /// The view takes no input, is drawn without animation of its own, and is
 /// laid out again in the size it first resolved to, so its layout must
 /// resolve the same way when offered that size. Its content changes without
-/// a transition; only its position animates.
+/// a transition; only its position animates. It is built only where its
+/// bounds reach into what is being drawn, so it must draw within them.
 ///
 /// # Examples
 ///
