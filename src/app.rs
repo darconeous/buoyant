@@ -166,8 +166,21 @@ where
     /// it is assembled on the stack and copied into place; this builds each
     /// part where it stays, so the stack holds only the layout and one
     /// render tree while it is built.
+    ///
+    /// `state` initializes the state in the place given, which keeps it off
+    /// the stack too: passed by value, its slot would stay in this frame,
+    /// under the layout and the render tree.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `state` returns anything but the place it was given.
     #[allow(unsafe_code)]
-    pub fn new_in(slot: &mut MaybeUninit<Self>, state: S, size: Size, view_fn: F) -> &mut Self
+    pub fn new_in(
+        slot: &mut MaybeUninit<Self>,
+        state: impl FnOnce(&mut MaybeUninit<S>) -> &mut S,
+        size: Size,
+        view_fn: F,
+    ) -> &mut Self
     where
         S: 'static,
     {
@@ -204,7 +217,10 @@ where
         // way are to distinct fields, so none alias. Should building panic,
         // the slot stays uninitialized and the fields written so far leak.
         unsafe {
-            (&raw mut (*app).state).write(state);
+            let place = (&raw mut (*app).state).cast::<MaybeUninit<S>>();
+            // Only a reference to the place given can be known to mean that
+            // it was initialized.
+            assert!(core::ptr::eq(state(&mut *place), place.cast::<S>()));
             (&raw mut (*app).view_fn).write(view_fn);
             (&raw mut (*app).env).write(DefaultEnvironment::non_animated());
             let state = &mut (*app).state;

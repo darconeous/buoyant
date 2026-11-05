@@ -90,10 +90,28 @@ fn a_request_moves_focus_and_is_recorded() {
 }
 
 #[test]
+#[should_panic(expected = "ptr::eq")]
+fn an_app_built_in_place_refuses_state_from_elsewhere() {
+    let mut slot = core::mem::MaybeUninit::uninit();
+    let view: fn(&State) -> _ = three_dials;
+    App::new_in(
+        &mut slot,
+        |_| Box::leak(Box::default()),
+        Size::new(100, 200),
+        view,
+    );
+}
+
+#[test]
 fn an_app_built_in_place_works_as_one_returned() {
     let mut slot = core::mem::MaybeUninit::uninit();
     let view: fn(&State) -> _ = three_dials;
-    let app = App::new_in(&mut slot, State::default(), Size::new(100, 200), view);
+    let app = App::new_in(
+        &mut slot,
+        |place| place.write(State::default()),
+        Size::new(100, 200),
+        view,
+    );
     app.set_roles(Role::Button);
     app.set_focus_binding(bind);
     capture(app, 1);
