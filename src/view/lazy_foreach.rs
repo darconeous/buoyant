@@ -1,5 +1,7 @@
 //! `LazyForEach` view. See [`LazyForEach`] for details.
 
+use core::time::Duration;
+
 use embedded_touch::Touch;
 
 use crate::{
@@ -11,7 +13,7 @@ use crate::{
     },
     layout::{HorizontalAlignment, LayoutDirection, ResolvedLayout},
     primitives::{Dimensions, Point, ProposedDimension, ProposedDimensions},
-    render::{ContentShape, LazyRows, RowId},
+    render::{ContentShape, LazyRows, RowId, Slide},
     transition::Opacity,
     view::{ViewLayout, ViewMarker},
 };
@@ -104,13 +106,26 @@ pub enum Extent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Natural<const M: usize> {
     estimate: u32,
+    motion: Duration,
 }
 
 impl<const M: usize> Natural<M> {
     /// Rows taken, until they are built, to be `estimate` tall.
     #[must_use]
     pub const fn new(estimate: u32) -> Self {
-        Self { estimate }
+        Self {
+            estimate,
+            motion: Duration::ZERO,
+        }
+    }
+
+    /// Rows moved by a row drawn before changing height ease to their new
+    /// places over `motion`, rather than taking them at once. The row that
+    /// changed stays where the list holds it, as what it shows does.
+    #[must_use]
+    pub const fn with_row_motion(mut self, motion: Duration) -> Self {
+        self.motion = motion;
+        self
     }
 }
 
@@ -140,12 +155,14 @@ impl<const M: usize> RowExtent for Natural<M> {
     type Memory = Memory<M>;
 }
 
-/// Where a built row of natural height is, from the list's top, and how
-/// tall it measured.
+/// Where a built row of natural height is, from the list's top, how tall it
+/// measured, and how much of that was room above what it shows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Placed {
     top: i32,
     height: u32,
+    inset: u32,
+    slide: Slide,
 }
 
 impl Placed {
@@ -179,6 +196,9 @@ pub struct Memory<const M: usize> {
     remembered: heapless::Vec<(RowId, usize, u32), M>,
     /// The width the heights were measured at.
     width: Option<u32>,
+    /// A row drawn before measured a new height in this build: the rows
+    /// placed after it are moved by what it shows, not by a correction.
+    resized: bool,
 }
 
 impl<const M: usize> Memory<M> {
@@ -482,7 +502,7 @@ where
         render_tree
             .rows
             .get(slot)
-            .is_some_and(|(row_id, row, _)| *row == index && *row_id == id)
+            .is_some_and(|(row_id, row, ..)| *row == index && *row_id == id)
             .then_some(slot)
     }
 
@@ -626,7 +646,7 @@ where
                 let result = (self.build_view)(index).handle_event(
                     event,
                     context,
-                    &mut render_tree.rows[slot].2,
+                    &mut render_tree.rows[slot].3,
                     captures,
                     &mut state.rows[slot].3,
                     &mut focus.tree,
@@ -659,7 +679,7 @@ where
                     let result = (self.build_view)(index).handle_event(
                         event,
                         context,
-                        &mut render_tree.rows[slot].2,
+                        &mut render_tree.rows[slot].3,
                         captures,
                         &mut state.rows[slot].3,
                         &mut focus.tree,
@@ -688,7 +708,7 @@ where
                     view.handle_event(
                         &current_focus_event,
                         context,
-                        &mut render_tree.rows[slot].2,
+                        &mut render_tree.rows[slot].3,
                         captures,
                         &mut state.rows[slot].3,
                         &mut focus.tree,
@@ -755,7 +775,7 @@ where
             return (self.build_view)(focus.index).handle_event(
                 event,
                 context,
-                &mut render_tree.rows[slot].2,
+                &mut render_tree.rows[slot].3,
                 captures,
                 &mut state.rows[slot].3,
                 &mut focus.tree,
@@ -784,7 +804,7 @@ where
             let result = (self.build_view)(index).handle_event(
                 event,
                 context,
-                &mut render_tree.rows[slot].2,
+                &mut render_tree.rows[slot].3,
                 captures,
                 &mut state.rows[slot].3,
                 &mut focus.tree,
@@ -822,7 +842,7 @@ where
                 _ => *seek,
             };
             let found = (self.build_view)(index)
-                .seek(&row_seek, &render_tree.rows[slot].2, row_state, row_focus)
+                .seek(&row_seek, &render_tree.rows[slot].3, row_state, row_focus)
                 .map(|tree| Focus { index, key, tree });
             result = result.or(found);
         }
@@ -849,7 +869,7 @@ where
             match view.handle_touch(
                 touch,
                 context,
-                &mut render_tree.rows[slot].2,
+                &mut render_tree.rows[slot].3,
                 captures,
                 &mut state.rows[slot].3,
             ) {
@@ -1120,7 +1140,7 @@ where
             let layout = view.layout(&self.row_offer(width), &env, captures, row_state);
             let at = self.row_origin(origin, width, *index, layout.resolved_size.width.into());
             let row = view.render_tree(&layout.sublayouts, at, &env, captures, row_state);
-            _ = tree.rows.push((*id, *index, row));
+            _ = tree.rows.push((*id, *index, Slide::default(), row));
         }
 
         if let (Some(viewport), Some((first, last))) = (viewport, chosen.shown) {
@@ -1227,7 +1247,7 @@ where
             .is_ok()
             && render_tree
                 .rows
-                .insert(slot, (id, row.index, row.tree))
+                .insert(slot, (id, row.index, Slide::default(), row.tree))
                 .is_ok()
     }
 
@@ -1640,8 +1660,31 @@ where
             captures,
             row_state,
         );
-        tree.rows.push((id, index, row)).ok()?;
-        let where_placed = Placed { top, height };
+        // A row drawn before changing height moves the rows placed after it,
+        // which ease there from where they were drawn, measured at the edge
+        // the row is placed by: the row itself stays where that edge is. What
+        // it shows moves with room opening above it, and eases there too.
+        let was = state.rows[slot].2;
+        let drawn = was.height != 0;
+        state.memory.resized |= drawn && height != was.height;
+        let (now, motion) = (env.app_time(), self.extent.motion);
+        let inset = view.row_inset();
+        let moved = match at {
+            At::Top(_) => was.top + to_i32(was.inset) - (top + to_i32(inset)),
+            At::Bottom(_) => was.bottom() - top.saturating_add(to_i32(height)),
+        };
+        let slide = if drawn && moved != 0 && state.memory.resized && !motion.is_zero() {
+            Slide::new(moved + was.slide.at(now, motion), now)
+        } else {
+            was.slide
+        };
+        tree.rows.push((id, index, slide, row)).ok()?;
+        let where_placed = Placed {
+            top,
+            height,
+            inset,
+            slide,
+        };
         state.rows[slot].1 = index;
         state.rows[slot].2 = where_placed;
         placed[slot] = true;
@@ -1670,6 +1713,8 @@ where
                 .shifted(-origin.y)
         });
         let mut tree = LazyRows::new(origin, width, visible);
+        tree.motion = self.extent.motion;
+        state.memory.resized = false;
 
         // The rows found again where they are now, and moved, with what they
         // show, by what the list reported as it was laid out.
@@ -1895,7 +1940,7 @@ where
             }
         }
         state.rows.sort_unstable_by_key(|(_, index, ..)| *index);
-        tree.rows.sort_unstable_by_key(|(_, index, _)| *index);
+        tree.rows.sort_unstable_by_key(|(_, index, ..)| *index);
         state.memory.anchor = Some(Anchor {
             id: self.id_at(anchor),
             index: anchor,
@@ -2088,7 +2133,12 @@ where
             index,
             state: row_state,
             tree,
-            placed: Placed { top, height },
+            placed: Placed {
+                top,
+                height,
+                inset: view.row_inset(),
+                slide: Slide::default(),
+            },
             victim,
         })
     }
@@ -2121,7 +2171,7 @@ where
             .is_ok()
             && render_tree
                 .rows
-                .insert(slot, (id, row.index, row.tree))
+                .insert(slot, (id, row.index, Slide::default(), row.tree))
                 .is_ok()
     }
 

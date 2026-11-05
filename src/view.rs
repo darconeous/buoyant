@@ -159,6 +159,12 @@ pub trait ViewLayout<Captures: ?Sized>: ViewMarker {
         false
     }
 
+    /// How much of this view's top is room above what it shows, as a row of
+    /// a list of natural heights: see [`ViewModifier::row_inset`].
+    fn row_inset(&self) -> u32 {
+        0
+    }
+
     /// The transition to use when this view appears or disappears.
     fn transition(&self) -> Self::Transition;
 

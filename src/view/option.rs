@@ -45,6 +45,10 @@ where
         self.as_ref().is_none_or(ViewLayout::is_empty)
     }
 
+    fn row_inset(&self) -> u32 {
+        self.as_ref().map_or(0, ViewLayout::row_inset)
+    }
+
     fn transition(&self) -> Self::Transition {
         // transition is not inherited from a child
         Opacity

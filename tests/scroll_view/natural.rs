@@ -43,6 +43,8 @@ struct State {
     ids: heapless::Vec<u32, CAPACITY>,
     /// Each identity's height.
     heights: [u32; IDS],
+    /// How much of each identity's top is room above what it shows.
+    insets: [u32; IDS],
     /// How tall the list takes a row not yet built to be.
     estimate: u32,
     /// Rows from this one on take no focus: by default, all of them.
@@ -55,6 +57,8 @@ struct State {
     version: u32,
     /// A list beside the shown one has been built, and is now only laid out.
     undrawn: bool,
+    /// How long rows take to ease to their places.
+    motion: Duration,
 }
 
 impl State {
@@ -63,12 +67,14 @@ impl State {
             focus: FocusState::new(),
             ids: (0..rows as u32).collect(),
             heights: core::array::from_fn(|id| 1 + (id as u32 * 7) % 5),
+            insets: [0; IDS],
             estimate: 2,
             plain_from: 0,
             width: 4,
             generation: 0,
             version: 0,
             undrawn: false,
+            motion: Duration::ZERO,
         }
     }
 
@@ -83,6 +89,12 @@ impl State {
 
     fn total(&self) -> i32 {
         self.top_of(self.ids.len())
+    }
+
+    fn open_room_above(&mut self, index: usize, by: u32) {
+        let id = self.ids[index] as usize;
+        self.insets[id] += by;
+        self.grow(index, by);
     }
 
     fn grow(&mut self, index: usize, by: u32) {
@@ -124,12 +136,15 @@ fn natural_rows<const N: usize, const M: usize>(
 ) -> impl View<char, State, Renderables = LazyRows<impl Render<char> + Clone + use<N, M>, N>> + use<N, M>
 {
     let (ids, heights, plain_from) = (state.ids.clone(), state.heights, state.plain_from);
+    let insets = state.insets;
     let keys = ids.clone();
-    LazyForEach::<N>::new_natural(ids.len(), Natural::<M>::new(state.estimate), move |i| {
+    let natural = Natural::<M>::new(state.estimate).with_row_motion(state.motion);
+    LazyForEach::<N>::new_natural(ids.len(), natural, move |i| {
         let id = ids[i];
         row(i, id, heights[id as usize], plain_from)
             .frame()
             .with_width(wide)
+            .row_inset(insets[id as usize])
     })
     .keyed(move |i| FocusKey(keys[i]))
     .with_alignment(HorizontalAlignment::Leading)
@@ -539,6 +554,101 @@ fn a_chat_opens_at_its_end_and_keeps_it_as_rows_change() {
     app.state_mut().ids.push(400).unwrap();
     app.finalize_view();
     end_after(&mut app, 2100, 3100);
+}
+
+/// A list whose rows ease to their places, from `view`.
+fn easing<V: View<char, State>>(view: fn(&State) -> V) -> TestApp<V> {
+    let mut state = State::new(150);
+    state.motion = Duration::from_millis(240);
+    app(state, view)
+}
+
+/// The line of row `id`'s top, in `buffer`.
+#[track_caller]
+fn top_of(buffer: &Buffer, id: u32) -> i32 {
+    lines(buffer)
+        .iter()
+        .position(|&line| line == Line::Row(id))
+        .expect("the row shows") as i32
+}
+
+#[test]
+fn rows_a_row_above_the_end_moves_ease_there_as_it_stays() {
+    let mut app = easing(chat);
+    end_at(&mut app, 1000);
+    settle(&mut app, 1016, 1100);
+    let ids = &app.state().ids;
+    let last = ids.len() - 1;
+    let (end, above) = (ids[last], ids[last - 4]);
+    let before = top_of(&draw(&mut app, 1100), above);
+    app.state_mut().grow(last, 12);
+    app.finalize_view();
+
+    let mut was = before;
+    let mut between = false;
+    for ms in (1116..1500).step_by(16) {
+        let frame = draw(&mut app, ms);
+        assert_eq!(lines(&frame)[HEIGHT - 1], Line::Row(end), "{ms}");
+        let top = top_of(&frame, above);
+        assert!(top <= was, "{top} back from {was} at {ms}");
+        between |= before - 12 < top && top < before;
+        was = top;
+    }
+    assert_eq!(was, before - 12);
+    assert!(between, "jumped from {before} to {was}");
+}
+
+#[test]
+fn rows_below_a_row_that_grows_ease_there() {
+    let mut app = easing(list);
+    top_at(&mut app, 1000);
+    settle(&mut app, 1016, 1100);
+    let below = app.state().ids[4];
+    let before = top_of(&draw(&mut app, 1100), below);
+    app.state_mut().grow(1, 12);
+    app.finalize_view();
+
+    let mut was = before;
+    let mut between = false;
+    for ms in (1116..1500).step_by(16) {
+        let top = top_of(&draw(&mut app, ms), below);
+        assert!(top >= was, "{top} back from {was} at {ms}");
+        between |= before < top && top < before + 12;
+        was = top;
+    }
+    assert_eq!(was, before + 12);
+    assert!(between, "jumped from {before} to {was}");
+}
+
+#[test]
+fn a_row_opening_room_above_what_it_shows_eases_there() {
+    let mut app = easing(list);
+    top_at(&mut app, 1000);
+    settle(&mut app, 1016, 1100);
+    let grown = app.state().ids[4];
+    let before = top_of(&draw(&mut app, 1100), grown);
+    app.state_mut().open_room_above(4, 6);
+    app.finalize_view();
+
+    let first = top_of(&draw(&mut app, 1116), grown);
+    assert!(first < before, "took its place at once, at {first}");
+    let mut was = first;
+    for ms in (1132..1500).step_by(16) {
+        let top = top_of(&draw(&mut app, ms), grown);
+        assert!(top >= was, "{top} back from {was} at {ms}");
+        was = top;
+    }
+    assert_eq!(was, before);
+}
+
+#[test]
+fn estimates_corrected_take_no_motion() {
+    let mut app = easing(chat);
+    end_at(&mut app, 1000);
+    let lifted = drag(&mut app, 1000, 0, 300);
+    let rest = draw(&mut app, lifted + 16);
+    at(app.state(), &rest);
+    assert_eq!(draw(&mut app, lifted + 1000).text, rest.text);
 }
 
 #[test]

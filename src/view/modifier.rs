@@ -34,6 +34,7 @@ pub mod padding;
 #[allow(missing_docs)]
 pub mod popover;
 mod priority;
+mod row_inset;
 mod scale_effect;
 mod transition;
 mod unfocusable;
@@ -48,8 +49,8 @@ pub(crate) use clipped::Clipped;
 use content_shape::ContentShape;
 pub(crate) use erase_captures::EraseCaptures;
 pub(crate) use exclusive_focus::ExclusiveFocus;
-use fixed::traits::ToFixed;
 pub(crate) use fade_on_change::FadeOnChange;
+use fixed::traits::ToFixed;
 pub(crate) use fixed_frame::FixedFrame;
 pub(crate) use fixed_size::FixedSize;
 pub(crate) use flex_frame::FlexFrame;
@@ -65,6 +66,7 @@ pub(crate) use overlay::OverlayView;
 pub(crate) use padding::Padding;
 pub(crate) use popover::Popover;
 pub(crate) use priority::Priority;
+pub(crate) use row_inset::RowInset;
 pub(crate) use scale_effect::ScaleEffect;
 pub(crate) use transition::Transition;
 pub(crate) use unfocusable::Unfocusable;
@@ -611,8 +613,6 @@ pub trait ViewModifier: Sized + ViewMarker {
         opacity::Opacity::new(self, opacity)
     }
 
-    /// Overlay uses the modified view to compute bounds, and renders the overlay
-    /// on top.
     /// Fades the view in over `duration` each time `value` changes.
     ///
     /// The fade keeps its time in the view's state, not in an animation, so
@@ -635,6 +635,8 @@ pub trait ViewModifier: Sized + ViewMarker {
         row_inset::RowInset::new(self, inset)
     }
 
+    /// Overlay uses the modified view to compute bounds, and renders the overlay
+    /// on top.
     ///
     /// # Examples
     ///

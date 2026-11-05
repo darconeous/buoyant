@@ -3,7 +3,7 @@ use core::time::Duration;
 use crate::{
     environment::Span,
     focus::FocusKey,
-    primitives::Point,
+    primitives::{Interpolate, Point},
     render::{AnimatedJoin, AnimationDomain, ContentShape, IntrinsicShape, Realization, Render},
     render_target::RenderTarget,
 };
@@ -18,6 +18,37 @@ pub enum RowId {
     Key(FocusKey),
 }
 
+/// How far a row is from its place as it eases there from where it was
+/// drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Slide {
+    from: i32,
+    /// In milliseconds of app time, wrapping.
+    started: u32,
+}
+
+impl Slide {
+    pub(crate) fn new(from: i32, now: Duration) -> Self {
+        Self {
+            from,
+            started: now.as_millis() as u32,
+        }
+    }
+
+    /// How far the row is from its place at `now`, on its way there over
+    /// `motion`, easing out.
+    pub(crate) fn at(self, now: Duration, motion: Duration) -> i32 {
+        let elapsed = (now.as_millis() as u32).wrapping_sub(self.started);
+        let total = motion.as_millis() as u32;
+        if self.from == 0 || elapsed >= total {
+            return 0;
+        }
+        let left = i64::from(total - elapsed);
+        let total = i64::from(total);
+        (i64::from(self.from) * left * left / (total * total)) as i32
+    }
+}
+
 /// The rows a [`LazyForEach`](crate::view::LazyForEach) built, in order.
 ///
 /// Rows are paired with the rows of another tree by their identity, not
@@ -25,8 +56,8 @@ pub enum RowId {
 /// around it changed.
 #[derive(Debug, Clone)]
 pub struct LazyRows<T, const N: usize> {
-    /// Each row's identity, index, and tree.
-    pub(crate) rows: heapless::Vec<(RowId, usize, T), N>,
+    /// Each row's identity, index, slide, and tree.
+    pub(crate) rows: heapless::Vec<(RowId, usize, Slide, T), N>,
     /// Where the first row is placed, the width rows are offered, and the
     /// span along the list's axis that rows were chosen to show, from its
     /// first row's edge: what a row built later, between rebuilds, needs.
@@ -43,6 +74,8 @@ pub struct LazyRows<T, const N: usize> {
     /// The rows moved, with what they show, into new coordinates since the
     /// last build: they take their places at once rather than sliding.
     pub(crate) rebased: bool,
+    /// How long rows take to ease to their places: see [`Slide`].
+    pub(crate) motion: Duration,
 }
 
 impl<T, const N: usize> LazyRows<T, N> {
@@ -55,12 +88,13 @@ impl<T, const N: usize> LazyRows<T, N> {
             stale: false,
             drifted: false,
             rebased: false,
+            motion: Duration::ZERO,
         }
     }
 
     /// The indices of the rows built, in order.
     pub fn built(&self) -> impl Iterator<Item = usize> + '_ {
-        self.rows.iter().map(|(_, index, _)| *index)
+        self.rows.iter().map(|(_, index, ..)| *index)
     }
 
     /// The row in `source` that `id` was.
@@ -82,7 +116,7 @@ impl<T: AnimatedJoin, const N: usize> AnimatedJoin for LazyRows<T, N> {
         if source.origin != self.origin || self.rebased {
             return;
         }
-        for (id, _, tree) in &mut self.rows {
+        for (id, .., tree) in &mut self.rows {
             if let Some(from) = Self::paired(source, *id) {
                 tree.join_from(from, domain);
             }
@@ -90,7 +124,7 @@ impl<T: AnimatedJoin, const N: usize> AnimatedJoin for LazyRows<T, N> {
     }
 }
 
-impl<C, T: Render<C>, const N: usize> Render<C> for LazyRows<T, N> {
+impl<C: Interpolate + Copy, T: Render<C>, const N: usize> Render<C> for LazyRows<T, N> {
     fn render(&self, render_target: &mut impl RenderTarget<ColorFormat = C>, style: &C) {
         for (.., tree) in &self.rows {
             tree.render(render_target, style);
@@ -106,11 +140,21 @@ impl<C, T: Render<C>, const N: usize> Render<C> for LazyRows<T, N> {
     ) {
         // A row built since the source, or in a list that moved, is drawn as
         // an animated one is, at the domain's time, from itself. Rows since
-        // dropped are gone.
+        // dropped are gone. A row easing to its place is drawn that far
+        // from it, wherever the list stands.
         let moved = source.origin != target.origin || target.rebased;
-        for (id, _, tree) in &target.rows {
+        for (id, _, slide, tree) in &target.rows {
             let from = Self::paired(source, *id).filter(|_| !moved).unwrap_or(tree);
-            T::render_animated(render_target, from, tree, style, domain);
+            let by = slide.at(domain.app_time, target.motion);
+            if by == 0 {
+                T::render_animated(render_target, from, tree, style, domain);
+                continue;
+            }
+            render_target.report_active_animation();
+            render_target.with_layer(
+                |l| l.offset(Point::new(0, by)),
+                |render_target| T::render_animated(render_target, from, tree, style, domain),
+            );
         }
     }
 

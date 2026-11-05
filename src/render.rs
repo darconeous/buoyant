@@ -44,7 +44,7 @@ pub use fade_in::FadeIn;
 pub use hint_background::HintBackground;
 pub use image::Image;
 pub use lazy::Lazy;
-pub use lazy_rows::{LazyRows, RowId};
+pub use lazy_rows::{LazyRows, RowId, Slide};
 pub use offset::Offset;
 pub use one_of::{OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, OneOf9, OneOf10};
 pub use opacity::Opacity;
