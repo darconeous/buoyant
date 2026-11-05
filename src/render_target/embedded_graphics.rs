@@ -328,11 +328,12 @@ where
         match clip_rect.intersection_with(&text_bounds) {
             Intersection::Contains => {
                 glyphs.for_each(|glyph| {
-                    font.draw_cluster(
+                    font.draw_cluster_faded(
                         glyph.cluster,
                         offset + glyph.offset,
                         color,
                         self.active_layer.background_hint,
+                        self.active_layer.alpha,
                         font_attributes,
                         &mut self.surface,
                     );
@@ -341,11 +342,12 @@ where
             Intersection::Overlaps => {
                 let mut surface = ClippedSurface::new(&mut self.surface, clip_rect);
                 glyphs.for_each(|glyph| {
-                    font.draw_cluster(
+                    font.draw_cluster_faded(
                         glyph.cluster,
                         offset + glyph.offset,
                         color,
                         self.active_layer.background_hint,
+                        self.active_layer.alpha,
                         font_attributes,
                         &mut surface,
                     );

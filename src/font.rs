@@ -73,6 +73,33 @@ pub trait FontRender<Color>: Font {
         surface: &mut impl Surface<Color = Color>,
     );
 
+    /// Render a grapheme cluster faded to `alpha`, where 255 is opaque.
+    /// `color` has been faded already, so by default this draws the cluster
+    /// in it; a font that draws colors of its own fades those here.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_cluster_faded(
+        &self,
+        cluster: &str,
+        offset: Point,
+        color: Color,
+        background_color: Option<Color>,
+        alpha: u8,
+        attributes: &Self::Attributes,
+        surface: &mut impl Surface<Color = Color>,
+    ) where
+        Color: Copy,
+    {
+        let _ = alpha;
+        self.draw_cluster(
+            cluster,
+            offset,
+            color,
+            background_color,
+            attributes,
+            surface,
+        );
+    }
+
     /// Render a grapheme cluster by drawing to a surface. By default its
     /// characters are drawn one after another.
     fn draw_cluster(
