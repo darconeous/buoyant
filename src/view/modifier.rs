@@ -14,6 +14,7 @@ mod clipped;
 mod content_shape;
 mod erase_captures;
 mod exclusive_focus;
+mod fade_on_change;
 mod fixed_frame;
 mod fixed_size;
 mod flex_frame;
@@ -48,6 +49,7 @@ use content_shape::ContentShape;
 pub(crate) use erase_captures::EraseCaptures;
 pub(crate) use exclusive_focus::ExclusiveFocus;
 use fixed::traits::ToFixed;
+pub(crate) use fade_on_change::FadeOnChange;
 pub(crate) use fixed_frame::FixedFrame;
 pub(crate) use fixed_size::FixedSize;
 pub(crate) use flex_frame::FlexFrame;
@@ -611,6 +613,28 @@ pub trait ViewModifier: Sized + ViewMarker {
 
     /// Overlay uses the modified view to compute bounds, and renders the overlay
     /// on top.
+    /// Fades the view in over `duration` each time `value` changes.
+    ///
+    /// The fade keeps its time in the view's state, not in an animation, so
+    /// it carries on wherever the view is moved or rebuilt meanwhile, as in
+    /// a row of a list whose rows take new places. The value the view is
+    /// first drawn with fades nothing.
+    fn fade_on_change<T: PartialEq + Clone + 'static>(
+        self,
+        value: T,
+        duration: core::time::Duration,
+    ) -> FadeOnChange<Self, T> {
+        fade_on_change::FadeOnChange::new(self, value, duration)
+    }
+
+    /// Says that `inset` of this view's top is room above what it shows, as a
+    /// row of a list of natural heights. Room that opens or closes there
+    /// moves what the row shows, and the row eases there as the rows around
+    /// it do. Put it outermost in the row.
+    fn row_inset(self, inset: u32) -> RowInset<Self> {
+        row_inset::RowInset::new(self, inset)
+    }
+
     ///
     /// # Examples
     ///
