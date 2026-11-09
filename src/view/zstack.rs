@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use embedded_touch::Touch;
 
 use crate::{
@@ -152,14 +153,15 @@ macro_rules! impl_view_for_zstack {
                 }.nested()
             }
 
-            fn render_tree(
+            fn render_tree_in<'p>(
                 &self,
                 layout: &Self::Sublayout,
                 origin: Point,
                 env: &impl LayoutEnvironment,
                 captures: &mut Captures,
                 state: &mut Self::State,
-            ) -> Self::Renderables {
+                place: Place<'p, Self::Renderables>,
+            ) -> Built<'p> {
                 $(
                     let [<offset_$n>] = origin
                         + Point::new(
@@ -174,11 +176,20 @@ macro_rules! impl_view_for_zstack {
                         );
                 )+
 
-                (
-                    $(
-                        self.items.$n.render_tree(&layout.sublayouts.$n.sublayouts, [<offset_$n>], env, captures, &mut state.$n)
-                    ),+
-                )
+                place.build_each(|$([<place_$n>]),+| {
+                    (
+                        $(
+                            self.items.$n.render_tree_in(
+                                &layout.sublayouts.$n.sublayouts,
+                                [<offset_$n>],
+                                env,
+                                captures,
+                                &mut state.$n,
+                                [<place_$n>],
+                            )
+                        ),+
+                    )
+                })
             }
 
             fn handle_event(
@@ -436,17 +447,18 @@ where
         self.items.0.layout(offer, env, captures, state)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         self.items
             .0
-            .render_tree(layout, origin, env, captures, state)
+            .render_tree_in(layout, origin, env, captures, state, place)
     }
 
     fn handle_event(

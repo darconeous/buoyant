@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use core::cmp::max;
 
 use embedded_touch::Touch;
@@ -325,42 +326,46 @@ macro_rules! impl_view_for_vstack {
             }
 
             #[allow(unused_assignments)]
-            fn render_tree(
+            fn render_tree_in<'p>(
                 &self,
                 layout: &Self::Sublayout,
                 origin: Point,
                 env: &impl LayoutEnvironment,
                 captures: &mut Captures,
                 state: &mut Self::State,
-            ) -> Self::Renderables {
+                place: Place<'p, Self::Renderables>,
+            ) -> Built<'p> {
                 let env = &VerticalEnvironment::from(env);
                 let mut height_offset = 0;
 
-                $(
-                    let offset = origin + Point::new(
-                        self.alignment.align(
-                            layout.resolved_size.width.into(),
-                            layout.sublayouts.$n.resolved_size.width.into(),
-                        ),
-                        height_offset,
-                    );
+                place.build_each(|$([<place_$n>]),+| {
+                    $(
+                        let offset = origin + Point::new(
+                            self.alignment.align(
+                                layout.resolved_size.width.into(),
+                                layout.sublayouts.$n.resolved_size.width.into(),
+                            ),
+                            height_offset,
+                        );
 
-                    let [<subtree_$n>] = self.items.$n.render_tree(
-                        &layout.sublayouts.$n.sublayouts,
-                        offset,
-                        env,
-                        captures,
-                        &mut state.items.$n,
-                    );
+                        let [<subtree_$n>] = self.items.$n.render_tree_in(
+                            &layout.sublayouts.$n.sublayouts,
+                            offset,
+                            env,
+                            captures,
+                            &mut state.items.$n,
+                            [<place_$n>],
+                        );
 
-                    let child_height: u32 = layout.sublayouts.$n.resolved_size.height.into();
-                    state.centers[$n] = offset.y + (child_height / 2) as i32;
-                    if !self.items.$n.is_empty() {
-                        height_offset += (child_height + self.spacing) as i32;
-                    }
-                )+
+                        let child_height: u32 = layout.sublayouts.$n.resolved_size.height.into();
+                        state.centers[$n] = offset.y + (child_height / 2) as i32;
+                        if !self.items.$n.is_empty() {
+                            height_offset += (child_height + self.spacing) as i32;
+                        }
+                    )+
 
-                ($([<subtree_$n>]),+)
+                    ($([<subtree_$n>]),+)
+                })
             }
 
             #[allow(clippy::too_many_lines)]
@@ -668,17 +673,18 @@ where
         self.items.0.layout(offer, env, captures, state)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         self.items
             .0
-            .render_tree(layout, origin, env, captures, state)
+            .render_tree_in(layout, origin, env, captures, state, place)
     }
 
     fn handle_event(

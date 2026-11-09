@@ -1,5 +1,6 @@
 use core::time::Duration;
 
+use crate::place::{Built, Place, build};
 use crate::{
     environment::Span,
     focus::FocusKey,
@@ -79,8 +80,15 @@ pub struct LazyRows<T, const N: usize> {
 }
 
 impl<T, const N: usize> LazyRows<T, N> {
-    pub(crate) const fn new(origin: Point, width: u32, visible: Option<Span>) -> Self {
-        Self {
+    /// Builds a tree with no rows yet in `place`, a field at a time, so that
+    /// the room for rows is not first built on the stack.
+    pub(crate) fn build(
+        place: Place<'_, Self>,
+        origin: Point,
+        width: u32,
+        visible: Option<Span>,
+    ) -> Built<'_> {
+        build!(place => LazyRows {
             rows: heapless::Vec::new(),
             origin,
             width,
@@ -89,7 +97,7 @@ impl<T, const N: usize> LazyRows<T, N> {
             drifted: false,
             rebased: false,
             motion: Duration::ZERO,
-        }
+        })
     }
 
     /// The indices of the rows built, in order.

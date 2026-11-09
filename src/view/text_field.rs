@@ -1,5 +1,6 @@
 //! A text field that edits text kept in application data.
 
+use crate::place::{Built, Place};
 use core::ops::Range;
 
 use embedded_touch::{Phase, Touch};
@@ -720,20 +721,22 @@ where
         }
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut C,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        (self.label)(state.status, self.area(state.status)).render_tree(
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        (self.label)(state.status, self.area(state.status)).render_tree_in(
             &layout.sublayouts,
             origin,
             env,
             captures,
             &mut state.label,
+            place,
         )
     }
 
@@ -1226,15 +1229,16 @@ impl<C: ?Sized, B: EditText, F: Font, K: Clone> ViewLayout<C> for TextArea<'_, B
         }
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         _env: &impl LayoutEnvironment,
         _captures: &mut C,
         _state: &mut Self::State,
-    ) -> Self::Renderables {
-        render::TextField {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        place.write(render::TextField {
             origin,
             size: layout.size,
             font: self.font,
@@ -1245,7 +1249,7 @@ impl<C: ?Sized, B: EditText, F: Font, K: Clone> ViewLayout<C> for TextArea<'_, B
             caret: layout.caret,
             scrolled: layout.scrolled,
             style: self.style.clone(),
-        }
+        })
     }
 
     fn handle_event(

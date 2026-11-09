@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use embedded_touch::Touch;
 
 use crate::{
@@ -442,28 +443,31 @@ macro_rules! define_branch {
                 }
             }
 
-            fn render_tree(
+            fn render_tree_in<'p>(
                 &self,
                 layout: &Self::Sublayout,
                 origin: Point,
                 env: &impl crate::environment::LayoutEnvironment,
                 captures: &mut Captures,
                 state: &mut Self::State,
-            ) -> Self::Renderables {
+                place: Place<'p, Self::Renderables>,
+            ) -> Built<'p> {
                 match (self, layout) {
                     $(
-                    (Self::$variant(v), $name::$variant(l0)) => {
-                        // apparently consumes a lot less stack than matching on state too
-                        if let $name::$variant(s) = state {
-                            render::$name::$variant(v.render_tree(&l0.sublayouts, origin, env, captures, s))
-                        } else {
-                            let mut s = v.build_state(captures);
-                            let renderables =
-                                render::$name::$variant(v.render_tree(&l0.sublayouts, origin, env, captures, &mut s));
-                            *state = $name::$variant(s);
-                            renderables
-                        }
-                    }
+                    (Self::$variant(v), $name::$variant(l0)) => paste::paste! {
+                        render::$name::[<build_ $variant:lower>](place, |place| {
+                            // apparently consumes a lot less stack than matching on state too
+                            if let $name::$variant(s) = state {
+                                v.render_tree_in(&l0.sublayouts, origin, env, captures, s, place)
+                            } else {
+                                let mut s = v.build_state(captures);
+                                let built =
+                                    v.render_tree_in(&l0.sublayouts, origin, env, captures, &mut s, place);
+                                *state = $name::$variant(s);
+                                built
+                            }
+                        })
+                    },
                     )+
                     // This is reachable if an old layout attempts to be reused
                     _ => panic!(

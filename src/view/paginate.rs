@@ -1,6 +1,7 @@
 //! A view that manages pagination of a child view using a separate focus group to
 //! trigger page changes.
 
+use crate::place::{Built, Place};
 use embedded_touch::Touch;
 
 use crate::{
@@ -112,15 +113,17 @@ where
         self.view.layout(offer, env, captures, state)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut C,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        self.view.render_tree(layout, origin, env, captures, state)
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        self.view
+            .render_tree_in(layout, origin, env, captures, state, place)
     }
 
     fn handle_event(

@@ -76,6 +76,7 @@ pub mod prelude {
 }
 
 use crate::focus::{DefaultFocus, Seek, SeekResult};
+use crate::place::{self, Built, Place};
 use crate::transition::Transition;
 use crate::{
     environment::LayoutEnvironment,
@@ -186,10 +187,28 @@ pub trait ViewLayout<Captures: ?Sized>: ViewMarker {
         state: &mut Self::State,
     ) -> ResolvedLayout<Self::Sublayout>;
 
-    /// Creates the render tree for this view based on the resolved layout.
+    /// Builds the render tree for this view, based on the resolved layout, in
+    /// `place`.
     ///
     /// This method is called after layout to place views and produce the actual
-    /// renderable objects that will be drawn to the screen.
+    /// renderable objects that will be drawn to the screen. A container builds
+    /// each child's tree in the child's part of `place`, so that no tree is held
+    /// on the stack on its way into the one above it: see [`Place`].
+    fn render_tree_in<'p>(
+        &self,
+        layout: &Self::Sublayout,
+        origin: Point,
+        env: &impl LayoutEnvironment,
+        captures: &mut Captures,
+        state: &mut Self::State,
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p>;
+
+    /// Creates the render tree for this view based on the resolved layout, and
+    /// returns it.
+    ///
+    /// The tree is built on the stack.
+    /// [`render_tree_in`](Self::render_tree_in) builds it where it is kept.
     fn render_tree(
         &self,
         layout: &Self::Sublayout,
@@ -197,7 +216,11 @@ pub trait ViewLayout<Captures: ?Sized>: ViewMarker {
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables;
+    ) -> Self::Renderables {
+        place::build_on_stack(|place| {
+            self.render_tree_in(layout, origin, env, captures, state, place)
+        })
+    }
 
     /// Process an event
     ///
@@ -276,15 +299,16 @@ where
         (*self).layout(offer, env, captures, state)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        (*self).render_tree(layout, origin, env, captures, state)
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        (*self).render_tree_in(layout, origin, env, captures, state, place)
     }
 
     fn priority(&self) -> i8 {

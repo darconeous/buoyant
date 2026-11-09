@@ -1,3 +1,4 @@
+use crate::place::{Built, Place, build};
 use crate::{
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
@@ -84,14 +85,15 @@ where
         }
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         let background_layout =
             self.background_shape
                 .layout(&layout.resolved_size.into(), env, &mut (), &mut ());
@@ -106,20 +108,27 @@ where
                     background_layout.resolved_size.height.into(),
                 ),
             );
-        let background_shape = self.background_shape.render_tree(
-            &background_layout.sublayouts,
-            background_origin,
-            env,
-            &mut (),
-            &mut (),
-        );
-        let foreground =
-            self.foreground
-                .render_tree(&layout.sublayouts, origin, env, captures, state);
-        (
-            ShadeSubtree::new(self.color.clone(), background_shape),
-            HintBackground::new(foreground, self.color.clone()),
-        )
+        place.build_each(|background, foreground| {
+            let background = build!(background => ShadeSubtree {
+                style: self.color.clone(),
+                subtree <- |place| self.background_shape.render_tree_in(
+                    &background_layout.sublayouts,
+                    background_origin,
+                    env,
+                    &mut (),
+                    &mut (),
+                    place,
+                ),
+            });
+            let foreground = build!(foreground => HintBackground {
+                subtree <- |place| {
+                    self.foreground
+                        .render_tree_in(&layout.sublayouts, origin, env, captures, state, place)
+                },
+                color: self.color.clone(),
+            });
+            (background, foreground)
+        })
     }
 
     fn handle_event(

@@ -1,3 +1,4 @@
+use crate::place::{Built, Place, build_at};
 use crate::{
     primitives::{Interpolate, Size},
     render::{AnimatedJoin, ContentShape, IntrinsicShape, Render},
@@ -8,7 +9,10 @@ use crate::{
 use super::AnimationDomain;
 
 /// An optional subtree that can be rendered with a transition.
+// `#[repr(u8)]` lays each variant out as its tag and its fields, so that
+// `Some` can be built in place.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[repr(u8)]
 pub enum TransitionOption<Subtree, T> {
     Some {
         subtree: Subtree,
@@ -16,11 +20,43 @@ pub enum TransitionOption<Subtree, T> {
         size: Size,
         /// The transition to apply
         transition: T,
-    },
-    None,
+    } = 0,
+    None = 1,
+}
+
+/// The layout of [`TransitionOption::Some`] (RFC 2195).
+#[repr(C)]
+struct SomeLayout<Subtree, T> {
+    tag: u8,
+    subtree: Subtree,
+    size: Size,
+    transition: T,
 }
 
 impl<Subtree, T> TransitionOption<Subtree, T> {
+    /// Builds a [`Self::Some`] of `size` and `transition` in `place`, and its
+    /// subtree in its place with `build`.
+    #[inline(always)]
+    #[allow(unsafe_code, clippy::inline_always)]
+    pub(crate) fn build_some<'p>(
+        mut place: Place<'p, Self>,
+        size: Size,
+        transition: T,
+        build: impl for<'b> FnOnce(Place<'b, Subtree>) -> Built<'b>,
+    ) -> Built<'p> {
+        let ptr = place.as_mut_ptr().cast::<SomeLayout<Subtree, T>>();
+        // SAFETY: RFC 2195 lays `Some` out as `SomeLayout`, whose fields are
+        // then places, with `Some`'s discriminant in its tag. With every field
+        // filled, so is the enum.
+        unsafe {
+            build_at(&raw mut (*ptr).subtree, build);
+            (&raw mut (*ptr).size).write(size);
+            (&raw mut (*ptr).transition).write(transition);
+            (&raw mut (*ptr).tag).write(0);
+            place.assume_built()
+        }
+    }
+
     /// Constructs a new [`Self::Some`] variant
     #[must_use]
     pub const fn new_some(subtree: Subtree, size: Size, transition: T) -> Self {

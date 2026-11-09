@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use crate::{
     environment::LayoutEnvironment,
     event::{Event, EventResult, TouchResult},
@@ -96,14 +97,15 @@ where
             .nested()
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         let foreground_size = layout.resolved_size;
         // Propose the foreground size to the overlay
         // This would benefit from splitting layout into separate functions for the various offers
@@ -127,17 +129,25 @@ where
                 ),
             );
 
-        (
-            self.foreground
-                .render_tree(&layout.sublayouts, origin, env, captures, &mut state.0),
-            self.overlay.render_tree(
+        place.build_each(|foreground, overlay| {
+            let foreground = self.foreground.render_tree_in(
+                &layout.sublayouts,
+                origin,
+                env,
+                captures,
+                &mut state.0,
+                foreground,
+            );
+            let overlay = self.overlay.render_tree_in(
                 &overlay_layout.sublayouts,
                 new_origin,
                 env,
                 captures,
                 &mut state.1,
-            ),
-        )
+                overlay,
+            );
+            (foreground, overlay)
+        })
     }
 
     #[expect(clippy::too_many_lines)]

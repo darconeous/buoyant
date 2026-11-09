@@ -1,6 +1,7 @@
 //! A view that captures focus on select and modifies state in response to
 //! focus navigation events while captive.
 
+use crate::place::{Built, Place};
 use core::marker::PhantomData;
 
 use embedded_touch::{Phase, Touch};
@@ -169,17 +170,18 @@ where
         view.layout(offer, env, captures, &mut state.1)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut C,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         // FIXME: Pass focus in render to avoid state sync?
         let view = (self.view_fn)(state.0);
-        view.render_tree(layout, origin, env, captures, &mut state.1)
+        view.render_tree_in(layout, origin, env, captures, &mut state.1, place)
     }
 
     fn handle_event(

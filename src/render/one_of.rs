@@ -1,14 +1,70 @@
+use crate::place::{Built, Place, build_variant};
 use crate::render::{ContentShape, IntrinsicShape, Render, RenderTarget};
 
 use super::AnimatedJoin;
 
+/// The index of a variant, by its name.
+macro_rules! index_of {
+    (V0) => {
+        0
+    };
+    (V1) => {
+        1
+    };
+    (V2) => {
+        2
+    };
+    (V3) => {
+        3
+    };
+    (V4) => {
+        4
+    };
+    (V5) => {
+        5
+    };
+    (V6) => {
+        6
+    };
+    (V7) => {
+        7
+    };
+    (V8) => {
+        8
+    };
+    (V9) => {
+        9
+    };
+}
+
 macro_rules! define_branch {
     ($name:ident, $($variant:ident),+) => {
+        // `#[repr(u8)]` lays each variant out as its tag and its payload, so
+        // that a variant can be built in place.
         #[derive(Debug, Clone, PartialEq, Eq)]
+        #[repr(u8)]
         pub enum $name<$($variant),+> {
             $(
-                $variant($variant),
+                $variant($variant) = index_of!($variant),
             )+
+        }
+
+        paste::paste! {
+            impl<$($variant),+> $name<$($variant),+> {
+                $(
+                    #[doc = "Builds the `" $variant "` variant in `place`, and its payload in its place with `build`."]
+                    #[inline(always)]
+                    #[allow(unsafe_code, clippy::inline_always)]
+                    pub(crate) fn [<build_ $variant:lower>]<'p>(
+                        place: Place<'p, Self>,
+                        build: impl for<'b> FnOnce(Place<'b, $variant>) -> Built<'b>,
+                    ) -> Built<'p> {
+                        // SAFETY: `Self` is `#[repr(u8)]`, and the variant's
+                        // discriminant is its index.
+                        unsafe { build_variant(place, index_of!($variant), build) }
+                    }
+                )+
+            }
         }
 
         impl<$($variant),+>  AnimatedJoin for $name<$($variant),+>

@@ -1,3 +1,4 @@
+use crate::place::{Built, Place, build};
 use crate::{
     environment::{LayoutEnvironment, ViewportEnvironment},
     event::{EventResult, TouchResult},
@@ -88,27 +89,29 @@ where
         }
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         let frame = Rectangle::new(Point::zero(), layout.resolved_size.into());
         let anchor = self.anchor.in_view_bounds(&frame);
-        // Scaled content is not where a viewport would say it is.
-        render::Transform::new(
-            self.inner.render_tree(
+        build!(place => render::Transform {
+            // Scaled content is not where a viewport would say it is.
+            inner <- |place| self.inner.render_tree_in(
                 &layout.sublayouts,
                 -anchor,
                 &ViewportEnvironment::new(env, None, None),
                 captures,
                 state,
+                place,
             ),
-            LinearTransform::new(origin + anchor, self.scale),
-        )
+            transform: LinearTransform::new(origin + anchor, self.scale),
+        })
     }
 
     fn handle_event(

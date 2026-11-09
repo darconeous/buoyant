@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use embedded_touch::Touch;
 
 use crate::{
@@ -433,21 +434,22 @@ where
         }
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         _env: &impl LayoutEnvironment,
         _captures: &mut Captures,
         _state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         let Sublayout {
             manual_offset,
             wrap_size,
             line_count,
             truncated,
         } = &layout;
-        render::Text {
+        place.write(render::Text {
             origin: origin + Point::new(manual_offset.0.into(), manual_offset.1.into()),
             size: *wrap_size,
             font: self.font,
@@ -457,7 +459,7 @@ where
             max_lines: *line_count,
             truncated: *truncated,
             wrap: self.wrap,
-        }
+        })
     }
 
     fn handle_event(

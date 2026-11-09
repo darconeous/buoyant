@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use embedded_touch::Touch;
 
 use crate::{
@@ -91,21 +92,23 @@ where
         )
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl crate::environment::LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         match (self, layout, state) {
-            (Some(v), Some(l0), Some(s0)) => TransitionOption::new_some(
-                v.render_tree(&l0.sublayouts, origin, env, captures, s0),
+            (Some(v), Some(l0), Some(s0)) => TransitionOption::build_some(
+                place,
                 l0.resolved_size.into(),
                 v.transition(),
+                |place| v.render_tree_in(&l0.sublayouts, origin, env, captures, s0, place),
             ),
-            (None, _, _) => TransitionOption::None,
+            (None, _, _) => place.write(TransitionOption::None),
             // This is reachable if an old layout attempts to be reused
             _ => panic!(
                 "Layout/state branch mismatch in conditional view. Layouts cannot be reused."

@@ -5,6 +5,7 @@
 
 use core::{cell::Cell, time::Duration};
 
+use buoyant::place::{Built, Place};
 use buoyant::{
     animation::Animation,
     app::{App, Harness as _},
@@ -878,17 +879,19 @@ impl<T: ViewLayout<State>> ViewLayout<State> for Undrawn<T> {
         self.child.layout(offer, env, captures, state)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut State,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         if !self.undrawn {
             _ = self.child.render_tree(layout, origin, env, captures, state);
         }
+        place.write(())
     }
 
     fn handle_event(
@@ -1108,16 +1111,18 @@ impl<T: ViewLayout<State>> ViewLayout<State> for Counted<T> {
         self.0.layout(offer, env, captures, state)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut State,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         BUILDS.set(BUILDS.get() + 1);
-        self.0.render_tree(layout, origin, env, captures, state)
+        self.0
+            .render_tree_in(layout, origin, env, captures, state, place)
     }
 
     fn handle_event(

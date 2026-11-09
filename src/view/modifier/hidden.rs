@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use crate::{
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
@@ -69,14 +70,16 @@ where
         }
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         _layout: &Self::Sublayout,
         _origin: Point,
         _env: &impl LayoutEnvironment,
         _captures: &mut Captures,
         _state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        place.write(())
     }
 
     fn handle_event(

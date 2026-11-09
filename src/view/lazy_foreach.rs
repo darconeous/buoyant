@@ -1,5 +1,6 @@
 //! `LazyForEach` view. See [`LazyForEach`] for details.
 
+use crate::place::{Built, Place, push_in};
 use core::time::Duration;
 
 use embedded_touch::Touch;
@@ -1094,14 +1095,15 @@ where
         }
     }
 
-    fn build_rows<Captures: ?Sized>(
+    fn build_rows<'p, Captures: ?Sized>(
         &self,
         layout: Dimensions,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut LazyForEachState<V::State, N, Extent>,
-    ) -> LazyRows<V::Renderables, N>
+        place: Place<'p, LazyRows<V::Renderables, N>>,
+    ) -> Built<'p>
     where
         V: ViewLayout<Captures>,
     {
@@ -1134,13 +1136,21 @@ where
         state.rows.sort_unstable_by_key(|(_, index, ..)| *index);
 
         let env = RowEnvironment { inner: env };
-        let mut tree = LazyRows::new(origin, width, visible);
+        let mut tree = place.fill(|place| LazyRows::build(place, origin, width, visible));
         for (id, index, (), row_state) in &mut state.rows {
             let view = (self.build_view)(*index);
             let layout = view.layout(&self.row_offer(width), &env, captures, row_state);
             let at = self.row_origin(origin, width, *index, layout.resolved_size.width.into());
-            let row = view.render_tree(&layout.sublayouts, at, &env, captures, row_state);
-            _ = tree.rows.push((*id, *index, Slide::default(), row));
+            _ = push_in(&mut tree.get_mut().rows, |place| {
+                place.build_each(|id_place, index_place, slide, row| {
+                    (
+                        id_place.write(*id),
+                        index_place.write(*index),
+                        slide.write(Slide::default()),
+                        view.render_tree_in(&layout.sublayouts, at, &env, captures, row_state, row),
+                    )
+                })
+            });
         }
 
         if let (Some(viewport), Some((first, last))) = (viewport, chosen.shown) {
@@ -1156,7 +1166,7 @@ where
                 safe.shifted(origin.y),
             );
         }
-        tree
+        tree.keep()
     }
 
     /// Builds row `index` on the side while handling an event, between
@@ -1292,15 +1302,16 @@ where
         self.layout_rows(offer, env, captures)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        self.build_rows(*layout, origin, env, captures, state)
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        self.build_rows(*layout, origin, env, captures, state, place)
     }
 
     fn handle_event(
@@ -1645,21 +1656,18 @@ where
                 .ok()?;
             state.rows.len() - 1
         };
-        let row_state = &mut state.rows[slot].3;
-        let layout = view.layout(&Self::natural_offer(width), env, captures, row_state);
+        let layout = view.layout(
+            &Self::natural_offer(width),
+            env,
+            captures,
+            &mut state.rows[slot].3,
+        );
         let height: u32 = layout.resolved_size.height.into();
         let top = match at {
             At::Top(top) => top,
             At::Bottom(bottom) => bottom.saturating_sub(to_i32(height)),
         };
         let x = self.row_x(width, layout.resolved_size.width.into());
-        let row = view.render_tree(
-            &layout.sublayouts,
-            origin + Point::new(x, top),
-            env,
-            captures,
-            row_state,
-        );
         // A row drawn before changing height moves the rows placed after it,
         // which ease there from where they were drawn, measured at the edge
         // the row is placed by: the row itself stays where that edge is. What
@@ -1678,7 +1686,24 @@ where
         } else {
             was.slide
         };
-        tree.rows.push((id, index, slide, row)).ok()?;
+        let row_state = &mut state.rows[slot].3;
+        push_in(&mut tree.rows, |place| {
+            place.build_each(|id_place, index_place, slide_place, row| {
+                (
+                    id_place.write(id),
+                    index_place.write(index),
+                    slide_place.write(slide),
+                    view.render_tree_in(
+                        &layout.sublayouts,
+                        origin + Point::new(x, top),
+                        env,
+                        captures,
+                        row_state,
+                        row,
+                    ),
+                )
+            })
+        })?;
         let where_placed = Placed {
             top,
             height,
@@ -1692,14 +1717,15 @@ where
     }
 
     #[expect(clippy::too_many_lines)]
-    fn build_rows<Captures: ?Sized>(
+    fn build_rows<'p, Captures: ?Sized>(
         &self,
         layout: Dimensions,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut LazyForEachState<V::State, N, Natural<M>>,
-    ) -> LazyRows<V::Renderables, N>
+        place: Place<'p, LazyRows<V::Renderables, N>>,
+    ) -> Built<'p>
     where
         V: ViewLayout<Captures>,
     {
@@ -1712,7 +1738,8 @@ where
                 .visible_along(LayoutDirection::Vertical)
                 .shifted(-origin.y)
         });
-        let mut tree = LazyRows::new(origin, width, visible);
+        let mut built = place.fill(|place| LazyRows::build(place, origin, width, visible));
+        let tree = built.get_mut();
         tree.motion = self.extent.motion;
         state.memory.resized = false;
 
@@ -1761,7 +1788,7 @@ where
             if let Some(viewport) = viewport {
                 viewport.vouch(LayoutDirection::Vertical, Span::UNBOUNDED, Span::UNBOUNDED);
             }
-            return tree;
+            return built.keep();
         }
         let last_row = self.count - 1;
         let total = model.total();
@@ -1818,8 +1845,8 @@ where
                 index, at, width, origin, &env_rows, captures, state, tree, placed, kept, anchor,
             )
         };
-        let Some(first_placed) = place(anchor, at, state, &mut tree, &mut placed, captures) else {
-            return tree;
+        let Some(first_placed) = place(anchor, at, state, &mut *tree, &mut placed, captures) else {
+            return built.keep();
         };
         let (mut first, mut last) = (anchor, anchor);
         let (mut top, mut bottom) = (first_placed.top, first_placed.bottom());
@@ -1831,7 +1858,7 @@ where
                         last + 1,
                         At::Top(bottom.saturating_add(spacing)),
                         state,
-                        &mut tree,
+                        &mut *tree,
                         &mut placed,
                         captures,
                     )
@@ -1851,7 +1878,7 @@ where
                         first - 1,
                         At::Bottom(top.saturating_sub(spacing)),
                         state,
-                        &mut tree,
+                        &mut *tree,
                         &mut placed,
                         captures,
                     )
@@ -1887,7 +1914,7 @@ where
                         .saturating_sub(model.between(index + 1, first)),
                 )
             };
-            _ = place(index, at, state, &mut tree, &mut placed, captures);
+            _ = place(index, at, state, &mut *tree, &mut placed, captures);
         }
         // Beyond the rows shown, nearest first.
         while count_placed(&placed) < N && (last < last_row || first > 0) {
@@ -1896,7 +1923,7 @@ where
                     last + 1,
                     At::Top(bottom.saturating_add(spacing)),
                     state,
-                    &mut tree,
+                    &mut *tree,
                     &mut placed,
                     captures,
                 )
@@ -1912,7 +1939,7 @@ where
                     first - 1,
                     At::Bottom(top.saturating_sub(spacing)),
                     state,
-                    &mut tree,
+                    &mut *tree,
                     &mut placed,
                     captures,
                 )
@@ -1968,7 +1995,7 @@ where
                 safe.shifted(origin.y),
             );
         }
-        tree
+        built.keep()
     }
 
     /// What the rows built from `first` to `last`, a run, vouch for around
@@ -2218,15 +2245,16 @@ where
         self.layout_rows(offer, env, captures, state)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        self.build_rows(*layout, origin, env, captures, state)
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        self.build_rows(*layout, origin, env, captures, state, place)
     }
 
     fn handle_event(

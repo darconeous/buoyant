@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use crate::{
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
@@ -86,15 +87,17 @@ where
         self.child.layout(&child_offer, env, captures, state)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        self.child.render_tree(layout, origin, env, captures, state)
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        self.child
+            .render_tree_in(layout, origin, env, captures, state, place)
     }
 
     fn handle_event(

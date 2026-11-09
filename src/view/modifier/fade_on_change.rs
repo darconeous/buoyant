@@ -1,3 +1,4 @@
+use crate::place::{Built, Place, build};
 use core::time::Duration;
 
 use crate::{
@@ -87,14 +88,15 @@ where
         self.inner.layout(offer, env, captures, &mut state.inner)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         // First seen, the content is simply there: only a change fades.
         if state.value.as_ref() != Some(&self.value) {
             if state.value.is_some() {
@@ -102,13 +104,14 @@ where
             }
             state.value = Some(self.value.clone());
         }
-        render::FadeIn {
-            subtree: self
-                .inner
-                .render_tree(layout, origin, env, captures, &mut state.inner),
+        build!(place => render::FadeIn {
+            subtree <- |place| {
+                self.inner
+                    .render_tree_in(layout, origin, env, captures, &mut state.inner, place)
+            },
             started: state.started,
             duration: self.duration,
-        }
+        })
     }
 
     fn handle_event(

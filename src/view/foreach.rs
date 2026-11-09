@@ -1,5 +1,6 @@
 //! `ForEach` view. See [`ForEach`] for details.
 
+use crate::place::{Built, Place, push_in};
 use core::cmp::max;
 
 use embedded_touch::Touch;
@@ -527,58 +528,65 @@ where
         .nested()
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        let env = &ForEachEnvironment::new(env, self.direction_with_alignment);
-
-        let mut accumulated_size = 0;
-        let mut renderables = heapless::Vec::new();
-        state.centers.clear();
-
-        for ((item_layout, item), item_state) in layout
-            .sublayouts
-            .iter()
-            .zip(self.items)
-            .zip(&mut state.items)
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         {
-            let aligned_origin = self.direction_with_alignment.align(
-                accumulated_size,
-                layout.resolved_size,
-                item_layout.resolved_size,
-            ) + origin;
+            let env = &ForEachEnvironment::new(env, self.direction_with_alignment);
 
-            let view = (self.build_view)(item);
+            let mut accumulated_size = 0;
+            // Each item is built in its place in the vector.
+            let mut renderables = place.fill(|place| place.write(heapless::Vec::new()));
+            state.centers.clear();
 
-            // TODO: If we include an ID here, rows can be animated and transitioned
-            let item = renderables.push(view.render_tree(
-                &item_layout.sublayouts,
-                aligned_origin,
-                env,
-                captures,
-                item_state,
-            ));
-            assert!(item.is_ok());
+            for ((item_layout, item), item_state) in layout
+                .sublayouts
+                .iter()
+                .zip(self.items)
+                .zip(&mut state.items)
+            {
+                let aligned_origin = self.direction_with_alignment.align(
+                    accumulated_size,
+                    layout.resolved_size,
+                    item_layout.resolved_size,
+                ) + origin;
 
-            let item_size = self
-                .direction_with_alignment
-                .size_of(item_layout.resolved_size);
-            let center = match D::layout_dir() {
-                LayoutDirection::Horizontal => aligned_origin.x,
-                LayoutDirection::Vertical => aligned_origin.y,
-            } + item_size / 2;
-            _ = state.centers.push(center);
-            if !view.is_empty() {
-                accumulated_size += item_size + self.spacing as i32;
+                let view = (self.build_view)(item);
+
+                // TODO: If we include an ID here, rows can be animated and transitioned
+                let item = push_in(renderables.get_mut(), |place| {
+                    view.render_tree_in(
+                        &item_layout.sublayouts,
+                        aligned_origin,
+                        env,
+                        captures,
+                        item_state,
+                        place,
+                    )
+                });
+                assert!(item.is_some());
+
+                let item_size = self
+                    .direction_with_alignment
+                    .size_of(item_layout.resolved_size);
+                let center = match D::layout_dir() {
+                    LayoutDirection::Horizontal => aligned_origin.x,
+                    LayoutDirection::Vertical => aligned_origin.y,
+                } + item_size / 2;
+                _ = state.centers.push(center);
+                if !view.is_empty() {
+                    accumulated_size += item_size + self.spacing as i32;
+                }
             }
-        }
 
-        renderables
+            renderables.keep()
+        }
     }
 
     #[allow(clippy::too_many_lines)]

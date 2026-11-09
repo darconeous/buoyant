@@ -10,6 +10,7 @@ pub use circle::Circle;
 pub use rectangle::Rectangle;
 pub use rounded_rectangle::RoundedRectangle;
 
+use crate::place::{Built, Place};
 use embedded_touch::Touch;
 
 use crate::{
@@ -115,25 +116,26 @@ where
         self.shape.layout(offer, env, captures, state)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         let inset = match self.style {
             StrokeOffset::Outer => -(self.line_width as i32 / 2),
             StrokeOffset::Inner => self.line_width as i32 / 2,
             StrokeOffset::Center => 0,
         };
-        StrokedShape::new(
+        place.write(StrokedShape::new(
             self.shape
                 .render_tree(layout, origin, env, captures, state)
                 .inset(inset),
             self.line_width,
-        )
+        ))
     }
 
     fn handle_event(

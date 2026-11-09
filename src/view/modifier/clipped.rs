@@ -1,3 +1,4 @@
+use crate::place::{Built, Place, build};
 use embedded_touch::{Phase, Touch};
 
 use crate::{
@@ -66,19 +67,22 @@ where
         self.child.layout(offer, env, captures, state).nested()
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        let inner = self
-            .child
-            .render_tree(&layout.sublayouts, origin, env, captures, state);
-        let rect = Rectangle::new(origin, layout.resolved_size.into());
-        render::Clipped::new(inner, rect)
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        build!(place => render::Clipped {
+            subtree <- |place| {
+                self.child
+                    .render_tree_in(&layout.sublayouts, origin, env, captures, state, place)
+            },
+            clip_rect: Rectangle::new(origin, layout.resolved_size.into()),
+        })
     }
 
     fn handle_event(

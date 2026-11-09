@@ -1,3 +1,4 @@
+use crate::place::{Built, Place, build};
 use crate::{
     environment::{LayoutEnvironment, ViewportEnvironment},
     event::{Event, EventResult, TouchResult},
@@ -63,33 +64,40 @@ where
         self.inner.layout(offer, env, captures, state)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         // Store the offset, and render subtrees from zero, where a viewport
         // the subtree is shown through is brought into its coordinates.
         let Some(viewport) = env.viewport() else {
-            return Offset::new(
-                origin,
-                self.inner
-                    .render_tree(layout, Point::zero(), env, captures, state),
-            );
+            return build!(place => Offset {
+                offset: origin,
+                subtree <- |place| {
+                    self.inner
+                        .render_tree_in(layout, Point::zero(), env, captures, state, place)
+                },
+            });
         };
         let rebased = viewport.rebased(origin);
-        let subtree = self.inner.render_tree(
-            layout,
-            Point::zero(),
-            &ViewportEnvironment::new(env, Some(&rebased), env.drift()),
-            captures,
-            state,
-        );
+        let built = build!(place => Offset {
+            offset: origin,
+            subtree <- |place| self.inner.render_tree_in(
+                layout,
+                Point::zero(),
+                &ViewportEnvironment::new(env, Some(&rebased), env.drift()),
+                captures,
+                state,
+                place,
+            ),
+        });
         viewport.absorb(&rebased, origin);
-        Offset::new(origin, subtree)
+        built
     }
 
     fn handle_event(

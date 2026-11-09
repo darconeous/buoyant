@@ -1,3 +1,4 @@
+use crate::place::{Built, Place, build};
 use crate::{
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
@@ -67,18 +68,19 @@ where
         self.inner.layout(offer, env, captures, state)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        render::HintBackground::new(
-            self.inner.render_tree(layout, origin, env, captures, state),
-            self.hint_color.clone(),
-        )
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        build!(place => render::HintBackground {
+            subtree <- |place| self.inner.render_tree_in(layout, origin, env, captures, state, place),
+            color: self.hint_color.clone(),
+        })
     }
 
     fn handle_event(

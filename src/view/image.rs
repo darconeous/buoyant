@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use core::marker::PhantomData;
 use core::ops::Deref;
 
@@ -92,15 +93,16 @@ where
         }
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         _layout: &Self::Sublayout,
         origin: crate::primitives::Point,
         _env: &impl crate::environment::LayoutEnvironment,
         _captures: &mut Captures,
         _state: &mut Self::State,
-    ) -> Self::Renderables {
-        Self::Renderables::new(origin, self.image.clone())
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        place.write(Self::Renderables::new(origin, self.image.clone()))
     }
 
     fn handle_event(

@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use crate::{
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
@@ -149,14 +150,15 @@ where
         }
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         let new_origin = origin
             + Point::new(
                 self.horizontal_alignment.align(
@@ -168,9 +170,8 @@ where
                     layout.inner_size.height.into(),
                 ),
             );
-
         self.child
-            .render_tree(&layout.inner, new_origin, env, captures, state)
+            .render_tree_in(&layout.inner, new_origin, env, captures, state, place)
     }
 
     fn handle_event(

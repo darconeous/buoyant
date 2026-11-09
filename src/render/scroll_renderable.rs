@@ -31,29 +31,6 @@ pub struct ScrollRenderable<T> {
 }
 
 impl<T> ScrollRenderable<T> {
-    pub(crate) fn new(
-        scroll_size: Size,
-        inner_size: Size,
-        inner: ScrolInner<T>,
-        glide: Glide,
-    ) -> Self {
-        Self {
-            scroll_size,
-            inner_size,
-            inner,
-            glide,
-            realized: [Span::UNBOUNDED; 2],
-            safe: [Span::UNBOUNDED; 2],
-        }
-    }
-
-    /// With what the content vouched for when it was built.
-    pub(crate) const fn with_coverage(mut self, realized: [Span; 2], safe: [Span; 2]) -> Self {
-        self.realized = realized;
-        self.safe = safe;
-        self
-    }
-
     /// What of the content the view shows at `app_time`, in the content's
     /// coordinates, along x then y.
     fn visible(&self, app_time: Duration) -> [Span; 2] {

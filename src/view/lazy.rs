@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use embedded_touch::Touch;
 
 use crate::{
@@ -102,15 +103,21 @@ impl<Captures: ?Sized, T: Clone, V: ViewLayout<()>> ViewLayout<Captures> for Laz
         }
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         _env: &impl crate::environment::LayoutEnvironment,
         _captures: &mut Captures,
         _state: &mut Self::State,
-    ) -> Self::Renderables {
-        render::Lazy::new(origin, *layout, self.data.clone(), self.build)
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        place.write(render::Lazy::new(
+            origin,
+            *layout,
+            self.data.clone(),
+            self.build,
+        ))
     }
 
     fn handle_event(

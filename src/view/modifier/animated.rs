@@ -1,3 +1,4 @@
+use crate::place::{Built, Place, build};
 use crate::{
     animation::Animation,
     environment::LayoutEnvironment,
@@ -68,21 +69,25 @@ where
         self.inner.layout(offer, env, captures, &mut state.1)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        Animate::new(
-            self.inner
-                .render_tree(layout, origin, env, captures, &mut state.1),
-            self.animation.clone(),
-            env.app_time(),
-            self.value.clone(),
-        )
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        build!(place => Animate {
+            subtree <- |place| {
+                self.inner
+                    .render_tree_in(layout, origin, env, captures, &mut state.1, place)
+            },
+            animation: self.animation.clone(),
+            frame_time: env.app_time(),
+            value: self.value.clone(),
+            is_partial: false,
+        })
     }
 
     fn handle_event(

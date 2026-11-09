@@ -1,3 +1,4 @@
+use crate::place::{Built, Place, build};
 use core::marker::PhantomData;
 
 use embedded_touch::Touch;
@@ -128,31 +129,43 @@ where
         }
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: crate::primitives::Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         let size = (*layout).into();
         let view = (self.inner)(size);
         let proposal = (*layout).into();
         let frame = Rectangle::new(origin, size);
         if let Some(inner_state) = state {
             let layout = view.layout(&proposal, env, captures, inner_state);
-            Container::new(
+            build!(place => Container {
                 frame,
-                view.render_tree(&layout.sublayouts, origin, env, captures, inner_state),
-            )
+                child <- |place| {
+                    view.render_tree_in(&layout.sublayouts, origin, env, captures, inner_state, place)
+                },
+            })
         } else {
             let mut inner_state = view.build_state(captures);
             let layout = view.layout(&proposal, env, captures, &mut inner_state);
-            let renderables =
-                view.render_tree(&layout.sublayouts, origin, env, captures, &mut inner_state);
+            let built = build!(place => Container {
+                frame,
+                child <- |place| view.render_tree_in(
+                    &layout.sublayouts,
+                    origin,
+                    env,
+                    captures,
+                    &mut inner_state,
+                    place,
+                ),
+            });
             *state = Some(inner_state);
-            Container::new(frame, renderables)
+            built
         }
     }
 

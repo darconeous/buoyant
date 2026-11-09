@@ -1,3 +1,4 @@
+use crate::place::{Built, Place, build};
 use crate::{
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
@@ -70,17 +71,15 @@ where
         self.inner.layout(offer, env, captures, state).nested()
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        let inner = self
-            .inner
-            .render_tree(&layout.sublayouts, origin, env, captures, state);
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         // There's probably a more efficient way to do this, but it's simple and
         // trivially correct for now.
         // Hopefully the compiler deletes most of it.
@@ -90,8 +89,13 @@ where
         let render_tree = self
             .shape
             .render_tree(&shape.sublayouts, origin, env, &mut (), &mut ());
-        let content_shape = render_tree.as_shape().into();
-        render::ContentShapeOverride::new(inner, content_shape)
+        build!(place => render::ContentShapeOverride {
+            subtree <- |place| {
+                self.inner
+                    .render_tree_in(&layout.sublayouts, origin, env, captures, state, place)
+            },
+            shape: render_tree.as_shape().into(),
+        })
     }
 
     fn handle_event(

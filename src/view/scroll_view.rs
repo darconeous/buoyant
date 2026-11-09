@@ -1,5 +1,6 @@
 //! Scroll view and related configuration
 
+use crate::place::{Built, Place, build};
 use core::time::Duration;
 
 use embedded_touch::{Phase, Touch};
@@ -758,8 +759,8 @@ impl<Inner> ScrollView<Inner> {
 impl<Inner> ScrollView<Inner> {
     /// Lays the content out and builds the view, moving it with the content
     /// by what the content reports to `drift`.
-    #[expect(clippy::too_many_lines)]
-    fn build<Captures>(
+    #[expect(clippy::too_many_lines, clippy::too_many_arguments)]
+    fn build<'p, Captures>(
         &self,
         layout: Dimensions,
         origin: Point,
@@ -767,7 +768,8 @@ impl<Inner> ScrollView<Inner> {
         captures: &mut Captures,
         state: &mut ScrollViewState<Inner::State>,
         drift: Option<&Drift>,
-    ) -> ScrollRenderable<Inner::Renderables>
+        place: Place<'p, ScrollRenderable<Inner::Renderables>>,
+    ) -> Built<'p>
     where
         Inner: ViewLayout<Captures>,
     {
@@ -920,22 +922,31 @@ impl<Inner> ScrollView<Inner> {
         };
         let viewport = Viewport::new(Rectangle::new(-drawn, scroll_size))
             .with_end_gravity([pinned_x || shift.x > 0, pinned_y || shift.y > 0]);
-        let inner_render_tree = self.inner.render_tree(
-            &inner_layout.sublayouts,
-            Point::zero(),
-            &ViewportEnvironment::new(env, Some(&viewport), drift),
-            captures,
-            &mut state.inner_state,
-        );
-        let offset = Offset::new(inner_origin, inner_render_tree);
-
-        ScrollRenderable::new(
+        build!(place => ScrollRenderable {
             scroll_size,
             inner_size,
-            Offset::new(origin, (offset, horizontal_bar, vertical_bar)),
             glide,
-        )
-        .with_coverage(viewport.realized(), viewport.safe())
+            inner <- |place| build!(place => Offset {
+                offset: origin,
+                subtree <- |place| place.build_each(|content, horizontal, vertical| {
+                    let content = build!(content => Offset {
+                        offset: inner_origin,
+                        subtree <- |place| self.inner.render_tree_in(
+                            &inner_layout.sublayouts,
+                            Point::zero(),
+                            &ViewportEnvironment::new(env, Some(&viewport), drift),
+                            captures,
+                            &mut state.inner_state,
+                            place,
+                        ),
+                    });
+                    (content, horizontal.write(horizontal_bar), vertical.write(vertical_bar))
+                }),
+            }),
+            // What the content vouched for, once it is built.
+            realized: viewport.realized(),
+            safe: viewport.safe(),
+        })
     }
 }
 
@@ -1030,39 +1041,43 @@ impl<Inner: ViewLayout<Captures>, Captures> ViewLayout<Captures> for ScrollView<
         }
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: crate::primitives::Point,
         env: &impl crate::environment::LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        mut place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         // Content placed by measured heights reports how far what it shows
         // moved, and the view moves with it. Content laid out to move the
         // view but not built confirms nothing: the view is then as it was,
-        // and is laid out again without the move. One tree is held at a time.
+        // and is laid out again without the move, in the same place.
         let saved = Saved::of(state);
         let mut moves = true;
         loop {
             let drift = Drift::new();
-            let tree = self.build(
-                *layout,
-                origin,
-                env,
-                captures,
-                state,
-                moves.then_some(&drift),
-            );
+            let tree = place.fill(|place| {
+                self.build(
+                    *layout,
+                    origin,
+                    env,
+                    captures,
+                    state,
+                    moves.then_some(&drift),
+                    place,
+                )
+            });
             if !moves || drift.confirmed() == drift.reported() {
-                return tree;
+                return tree.keep();
             }
             debug_assert!(
                 false,
                 "content laid out to move a scroll view was not built: a view that lays out \
                  content it may not draw must not pass it the drift"
             );
-            drop(tree);
+            place = tree.clear();
             saved.restore(state);
             moves = false;
         }

@@ -99,7 +99,8 @@ embedded-graphics-simulator = { version = "0.8.0", default-features = false, fea
 heapless = "0.9.1"
 
 [workspace.lints.rust]
-# Denied, not forbidden: building an App in place needs it, allowed there alone.
+# Denied, not forbidden: building in place needs it, allowed in `place` and
+# the few places that build an App or an enum variant in place.
 unsafe_code = "deny"
 missing_debug_implementations = "deny"
 

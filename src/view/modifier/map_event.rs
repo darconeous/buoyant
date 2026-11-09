@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use core::marker::PhantomData;
 
 use crate::{
@@ -90,16 +91,17 @@ impl<C: ?Sized, V: ViewLayout<C>, F: Fn(&Event, &mut C, &mut I) -> Mapping, I: '
         self.inner.layout(offer, env, captures, &mut state.1)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: crate::primitives::Point,
         env: &impl crate::environment::LayoutEnvironment,
         captures: &mut C,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         self.inner
-            .render_tree(layout, origin, env, captures, &mut state.1)
+            .render_tree_in(layout, origin, env, captures, &mut state.1, place)
     }
 
     fn handle_event(

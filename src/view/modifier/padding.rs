@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use crate::{
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
@@ -106,26 +107,28 @@ where
         child_layout
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         let (leading, top) = match self.edges {
             Edges::All => (self.padding, self.padding),
             Edges::Horizontal | Edges::Leading => (self.padding, 0),
             Edges::Vertical | Edges::Top => (0, self.padding),
             Edges::Bottom | Edges::Trailing => (0, 0),
         };
-        self.inner.render_tree(
+        self.inner.render_tree_in(
             layout,
             origin + Point::new(leading as i32, top as i32),
             env,
             captures,
             state,
+            place,
         )
     }
 

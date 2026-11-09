@@ -1,3 +1,4 @@
+use crate::place::{Built, Place, build};
 use core::time::Duration;
 
 use crate::{
@@ -378,67 +379,79 @@ where
             .nested()
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: crate::primitives::Point,
         env: &impl crate::environment::LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        let inner_tree = self.inner.render_tree(
-            &layout.sublayouts,
-            origin,
-            env,
-            captures,
-            &mut state.inner_state,
-        );
-        // A rebuilt view settles any dismissal: an overlay still present is
-        // open again and takes focus back.
-        state.dismissed = false;
-        let overlay_tree = if let Some(overlay_view) = &self.overlay {
-            let overlay_state = state
-                .overlay_state
-                .get_or_insert_with(|| overlay_view.build_state(captures));
-            let overlay_layout =
-                overlay_view.layout(&layout.resolved_size.into(), env, captures, overlay_state);
-            let origin = origin
-                + Point::new(
-                    HorizontalAlignment::Center.align(
-                        layout.resolved_size.width.into(),
-                        overlay_layout.resolved_size.width.into(),
-                    ),
-                    VerticalAlignment::Center.align(
-                        layout.resolved_size.height.into(),
-                        overlay_layout.resolved_size.height.into(),
-                    ),
-                );
-            TransitionOption::new_some(
-                overlay_view.render_tree(
-                    &overlay_layout.sublayouts,
-                    origin,
-                    env,
-                    captures,
-                    overlay_state,
-                ),
-                layout.resolved_size.into(),
-                overlay_view.transition(),
-            )
-        } else {
-            state.overlay_state = None;
-            state.opener = None;
-            state.outside_touch = None;
-            TransitionOption::None
-        };
-        (
-            inner_tree,
-            Animate::new(
-                overlay_tree,
-                self.animation.clone(),
-                env.app_time(),
-                self.overlay.is_some(),
-            ),
-        )
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        place.build_each(|inner, overlay| {
+            let inner = self.inner.render_tree_in(
+                &layout.sublayouts,
+                origin,
+                env,
+                captures,
+                &mut state.inner_state,
+                inner,
+            );
+            // A rebuilt view settles any dismissal: an overlay still present is
+            // open again and takes focus back.
+            state.dismissed = false;
+            let overlay = build!(overlay => Animate {
+                subtree <- |place| {
+                    if let Some(overlay_view) = &self.overlay {
+                        let overlay_state = state
+                            .overlay_state
+                            .get_or_insert_with(|| overlay_view.build_state(captures));
+                        let overlay_layout = overlay_view.layout(
+                            &layout.resolved_size.into(),
+                            env,
+                            captures,
+                            overlay_state,
+                        );
+                        let origin = origin
+                            + Point::new(
+                                HorizontalAlignment::Center.align(
+                                    layout.resolved_size.width.into(),
+                                    overlay_layout.resolved_size.width.into(),
+                                ),
+                                VerticalAlignment::Center.align(
+                                    layout.resolved_size.height.into(),
+                                    overlay_layout.resolved_size.height.into(),
+                                ),
+                            );
+                        TransitionOption::build_some(
+                            place,
+                            layout.resolved_size.into(),
+                            overlay_view.transition(),
+                            |place| {
+                                overlay_view.render_tree_in(
+                                    &overlay_layout.sublayouts,
+                                    origin,
+                                    env,
+                                    captures,
+                                    overlay_state,
+                                    place,
+                                )
+                            },
+                        )
+                    } else {
+                        state.overlay_state = None;
+                        state.opener = None;
+                        state.outside_touch = None;
+                        place.write(TransitionOption::None)
+                    }
+                },
+                animation: self.animation.clone(),
+                frame_time: env.app_time(),
+                value: self.overlay.is_some(),
+                is_partial: false,
+            });
+            (inner, overlay)
+        })
     }
 
     fn handle_event(

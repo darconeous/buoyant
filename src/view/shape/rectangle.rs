@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use embedded_touch::{Phase, Touch};
 
 use crate::{
@@ -60,18 +61,19 @@ impl<Captures: ?Sized> ViewLayout<Captures> for Rectangle {
         }
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         _env: &impl LayoutEnvironment,
         _captures: &mut Captures,
         _state: &mut Self::State,
-    ) -> Self::Renderables {
-        crate::render::Rect {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        place.write(crate::render::Rect {
             origin,
             size: (*layout).into(),
-        }
+        })
     }
 
     fn handle_event(

@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use embedded_touch::Touch;
 
 use crate::{
@@ -161,17 +162,18 @@ where
         self.choices.0.layout(offer, env, captures, state)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
         self.choices
             .0
-            .render_tree(layout, origin, env, captures, state)
+            .render_tree_in(layout, origin, env, captures, state, place)
     }
 
     fn handle_event(
@@ -295,14 +297,15 @@ macro_rules! impl_view_that_fits {
                 unreachable!("the last choice always fits")
             }
 
-            fn render_tree(
+            fn render_tree_in<'p>(
                 &self,
                 layout: &Self::Sublayout,
                 origin: Point,
                 env: &impl LayoutEnvironment,
                 captures: &mut Captures,
                 state: &mut Self::State,
-            ) -> Self::Renderables {
+                place: Place<'p, Self::Renderables>,
+            ) -> Built<'p> {
                 match layout {
                     $(
                         $one_of::$V(l) => {
@@ -310,17 +313,22 @@ macro_rules! impl_view_that_fits {
                                 .$idx
                                 .take()
                                 .unwrap_or_else(|| self.choices.$idx.build_state(captures));
-                            let tree = self.choices.$idx.render_tree(
-                                &l.sublayouts,
-                                origin,
-                                env,
-                                captures,
-                                &mut mounted,
-                            );
+                            let built = paste::paste! {
+                                render::$one_of::[<build_ $V:lower>](place, |place| {
+                                    self.choices.$idx.render_tree_in(
+                                        &l.sublayouts,
+                                        origin,
+                                        env,
+                                        captures,
+                                        &mut mounted,
+                                        place,
+                                    )
+                                })
+                            };
                             // Only the mounted choice keeps its state.
                             *state = Default::default();
                             state.$idx = Some(mounted);
-                            render::$one_of::$V(tree)
+                            built
                         }
                     )+
                 }

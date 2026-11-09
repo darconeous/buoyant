@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use embedded_touch::Touch;
 
 use crate::{
@@ -83,14 +84,16 @@ impl<Captures: ?Sized> ViewLayout<Captures> for EmptyView {
         }
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         _layout: &Self::Sublayout,
         _origin: Point,
         _env: &impl LayoutEnvironment,
         _captures: &mut Captures,
         _state: &mut Self::State,
-    ) -> Self::Renderables {
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        place.write(())
     }
 
     fn handle_event(

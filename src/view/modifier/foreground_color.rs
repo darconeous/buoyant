@@ -1,3 +1,4 @@
+use crate::place::{Built, Place, build};
 use crate::{
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
@@ -64,18 +65,19 @@ impl<Color: Interpolate + Clone, Captures: ?Sized, Inner: ViewLayout<Captures>> 
         self.inner.layout(offer, env, captures, state)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        ShadeSubtree::new(
-            self.style.clone(),
-            self.inner.render_tree(layout, origin, env, captures, state),
-        )
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        build!(place => ShadeSubtree {
+            style: self.style.clone(),
+            subtree <- |place| self.inner.render_tree_in(layout, origin, env, captures, state, place),
+        })
     }
 
     fn handle_event(

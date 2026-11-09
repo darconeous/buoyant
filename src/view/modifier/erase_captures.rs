@@ -1,3 +1,4 @@
+use crate::place::{Built, Place};
 use crate::{
     environment::LayoutEnvironment,
     event::{EventResult, TouchResult},
@@ -73,15 +74,17 @@ impl<T: ViewLayout<()>, Captures: ?Sized> ViewLayout<Captures> for EraseCaptures
         self.inner.layout(offer, env, &mut (), state)
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: Point,
         env: &impl LayoutEnvironment,
         _captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        self.inner.render_tree(layout, origin, env, &mut (), state)
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        self.inner
+            .render_tree_in(layout, origin, env, &mut (), state, place)
     }
 
     fn handle_event(

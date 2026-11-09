@@ -4,6 +4,7 @@
 //! and interacting with the UI, with default implementations built on top of
 //! [`Harness::send`] and [`Harness::send_with_group`].
 
+use crate::place::{self, AbortOnUnwind, CloneOnUnwind};
 use core::mem::MaybeUninit;
 use core::time::Duration;
 
@@ -231,8 +232,15 @@ where
             let view_state = &mut (*app).view_state;
             let layout = view.layout(&size.into(), env, state, view_state);
             let trees = &raw mut (*app).trees;
-            Trees::write_in(trees, || {
-                view.render_tree(&layout.sublayouts, Point::zero(), env, state, view_state)
+            Trees::write_in(trees, |place| {
+                view.render_tree_in(
+                    &layout.sublayouts,
+                    Point::zero(),
+                    env,
+                    state,
+                    view_state,
+                    place,
+                )
             });
             (&raw mut (*app).focus_tree).write(DefaultFocus::default_first());
             (&raw mut (*app).focus_shape).write(ContentShape::Empty);
@@ -502,8 +510,20 @@ where
     }
 
     /// Builds the view from the state, and lays it out into the target tree.
+    ///
+    /// The view and the tree are each dropped, then built again where they
+    /// are kept, rather than built on the stack and moved there: either can
+    /// be larger than a small device's stack.
+    #[allow(unsafe_code)]
     fn build_target(&mut self) {
-        self.view = (self.view_fn)(&self.state);
+        // Should the view panic as it is built, nothing can stand in for it.
+        let guard = AbortOnUnwind;
+        // SAFETY: the view is dropped, and at once written again.
+        unsafe {
+            core::ptr::drop_in_place(&raw mut self.view);
+            (&raw mut self.view).write((self.view_fn)(&self.state));
+        }
+        guard.disarm();
         self.env = DefaultEnvironment::new(self.elapsed);
         let layout = self.view.layout(
             &self.size.into(),
@@ -511,13 +531,26 @@ where
             &mut self.state,
             &mut self.view_state,
         );
-        *self.trees.target_mut() = self.view.render_tree(
-            &layout.sublayouts,
-            Point::zero(),
-            &self.env,
-            &mut self.state,
-            &mut self.view_state,
-        );
+        let (source, target) = self.trees.both_mut();
+        let (source, target): (*const V::Renderables, *mut V::Renderables) = (source, target);
+        // SAFETY: the trees are apart, and nothing else uses either while the
+        // target is built.
+        let guard = unsafe { CloneOnUnwind::new(source, target) };
+        // SAFETY: the tree is dropped, and at once built again in its place.
+        unsafe {
+            core::ptr::drop_in_place(target);
+            place::build_at(target, |place| {
+                self.view.render_tree_in(
+                    &layout.sublayouts,
+                    Point::zero(),
+                    &self.env,
+                    &mut self.state,
+                    &mut self.view_state,
+                    place,
+                )
+            });
+        }
+        guard.disarm();
     }
 
     /// Resolves focus in the built view, records it in the binding, and

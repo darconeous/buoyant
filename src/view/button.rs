@@ -1,5 +1,6 @@
 //! A tappable button that can be pressed to trigger an action.
 
+use crate::place::{Built, Place};
 use core::marker::PhantomData;
 
 use embedded_touch::{Phase, Touch};
@@ -195,20 +196,22 @@ where
         }
     }
 
-    fn render_tree(
+    fn render_tree_in<'p>(
         &self,
         layout: &Self::Sublayout,
         origin: crate::primitives::Point,
         env: &impl LayoutEnvironment,
         captures: &mut Captures,
         state: &mut Self::State,
-    ) -> Self::Renderables {
-        (self.view)(state.0.clone()).render_tree(
+        place: Place<'p, Self::Renderables>,
+    ) -> Built<'p> {
+        (self.view)(state.0.clone()).render_tree_in(
             &layout.sublayouts,
             origin,
             env,
             captures,
             &mut state.1,
+            place,
         )
     }
 
