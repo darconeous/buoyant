@@ -29,6 +29,34 @@ mod view_that_fits;
 mod vstack;
 mod zstack;
 
+/// Sorts a priority group's child indices by increasing flexibility.
+///
+/// An insertion sort: a group is a handful of children, for which it costs
+/// a fraction of the standard sort's code, and the stacks and lists share it.
+pub(crate) fn sort_by_flexibility(
+    indices: &mut [usize],
+    flexibilities: &[crate::primitives::Dimension],
+) {
+    for end in 1..indices.len() {
+        let mut at = end;
+        while at > 0 && flexibilities[indices[at - 1]] > flexibilities[indices[at]] {
+            indices.swap(at - 1, at);
+            at -= 1;
+        }
+    }
+}
+
+/// Panics on a stack child its stack never names: an index past its
+/// children, or one its layout left unlaid.
+///
+/// One shared function, rather than a panic in each of the many
+/// monomorphized stacks, keeps each of those to a call.
+#[cold]
+#[inline(never)]
+pub(crate) fn missing_child() -> ! {
+    unreachable!("no such stack child")
+}
+
 #[cfg(feature = "embedded-graphics")]
 pub use as_drawable::AsDrawable;
 pub use button::{Button, ButtonState};

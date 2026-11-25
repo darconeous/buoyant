@@ -10,7 +10,7 @@ use crate::{
     event::{Event, EventContext, EventResult, TouchResult},
     focus::{
         DefaultFocus, FocusAction, FocusDirection, FocusKey, Seek, SeekResult, SeekTarget,
-        center_along, nearest_first,
+        center_along, nearest_center_order, nearest_first,
     },
     layout::{HorizontalAlignment, LayoutDirection, ResolvedLayout},
     primitives::{Dimensions, Point, ProposedDimension, ProposedDimensions},
@@ -664,9 +664,10 @@ where
                 let centers: heapless::Vec<i32, N> = (0..state.rows.len())
                     .map(|slot| center(self, state, render_tree, slot))
                     .collect();
-                let order: heapless::Vec<usize, N> =
-                    nearest_first(centers.len(), |slot| centers[slot], target).collect();
-                for slot in order {
+                let mut order = [0; N];
+                let order = &mut order[..centers.len()];
+                nearest_center_order(&centers, target, order);
+                for &mut slot in order {
                     let index = state.rows[slot].1;
                     if self.slot(state, render_tree, index) != Some(slot) {
                         continue;

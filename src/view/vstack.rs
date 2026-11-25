@@ -7,14 +7,13 @@ use crate::{
     environment::LayoutEnvironment,
     event::{Event, EventContext, EventResult, TouchResult},
     focus::{
-        DefaultFocus, FocusAction, FocusDirection, Seek, SeekResult, center_along, nearest_first,
+        DefaultFocus, FocusAction, FocusDirection, Seek, SeekResult, center_along,
+        nearest_center_order,
     },
     layout::{HorizontalAlignment, LayoutDirection, ResolvedLayout},
     primitives::{Dimension, Dimensions, Point, ProposedDimension, ProposedDimensions},
     view::{ViewLayout, ViewMarker, modifier::FixedSize},
 };
-
-use core::cell::RefCell;
 
 /// A stack of heterogeneous views that arranges its children vertically.
 ///
@@ -120,10 +119,13 @@ impl<S, const N: usize> StackState<S, N> {
     }
 }
 
-type LayoutFn<'a> = &'a mut dyn FnMut(ProposedDimensions) -> Dimensions;
+/// Lays out the child at an index, keeping the layout it resolves to.
+type LayoutFn<'a> = &'a mut dyn FnMut(usize, ProposedDimensions) -> Dimensions;
 
+/// `subviews` holds each child's priority and whether it is empty.
 fn layout_n(
-    subviews: &mut [(LayoutFn, i8, bool)],
+    layout_fn: LayoutFn,
+    subviews: &[(i8, bool)],
     offer: ProposedDimensions,
     spacing: u32,
     flexibilities: &mut [Dimension],
@@ -142,12 +144,12 @@ fn layout_n(
         let mut total_height: Dimension = 0u32.into();
         let mut max_width: Dimension = 0u32.into();
         let mut non_empty_views: u32 = 0;
-        for (layout_fn, _, is_empty) in subviews {
+        for (index, &(_, is_empty)) in subviews.iter().enumerate() {
             // layout must be called at least once on every view to avoid panic unwrapping the
             // resolved layout.
             // TODO: Allowing layouts to return a cheap "empty" layout could avoid this?
-            let dimensions = layout_fn(offer);
-            if *is_empty {
+            let dimensions = layout_fn(index, offer);
+            if is_empty {
                 continue;
             }
 
@@ -175,14 +177,14 @@ fn layout_n(
     };
 
     for index in 0..subview_count {
-        let minimum_dimension = subviews[index].0(min_proposal);
+        let minimum_dimension = layout_fn(index, min_proposal);
         // skip any further work for empty views
-        if subviews[index].2 {
+        if subviews[index].1 {
             num_empty_views += 1;
             continue;
         }
 
-        let maximum_dimension = subviews[index].0(max_proposal);
+        let maximum_dimension = layout_fn(index, max_proposal);
         flexibilities[index] = maximum_dimension.height - minimum_dimension.height;
     }
 
@@ -195,7 +197,7 @@ fn layout_n(
         let mut max = i8::MIN;
         let mut slice_start: usize = 0;
         let mut slice_len: usize = 0;
-        for (i, (_, priority, is_empty)) in subviews.iter().enumerate() {
+        for (i, (priority, is_empty)) in subviews.iter().enumerate() {
             if last_priority_group.is_some_and(|p| p <= *priority) || *is_empty {
                 continue;
             }
@@ -224,17 +226,20 @@ fn layout_n(
         }
 
         let group_indices = &mut subviews_indices[slice_start..slice_start + slice_len];
-        group_indices.sort_unstable_by_key(|&i| flexibilities[i]);
+        super::sort_by_flexibility(group_indices, flexibilities);
 
         let mut remaining_group_size = group_indices.len() as u32;
 
         for index in group_indices {
             let height_fraction =
                 remaining_height / remaining_group_size + remaining_height % remaining_group_size;
-            let size = subviews[*index].0(ProposedDimensions {
-                width: offer.width,
-                height: ProposedDimension::Exact(height_fraction),
-            });
+            let size = layout_fn(
+                *index,
+                ProposedDimensions {
+                    width: offer.width,
+                    height: ProposedDimension::Exact(height_fraction),
+                },
+            );
             remaining_height = remaining_height.saturating_sub(size.height.into());
             remaining_group_size -= 1;
             max_width = max_width.max(size.width);
@@ -293,34 +298,37 @@ macro_rules! impl_view_for_vstack {
                 const N: usize = count!($($n),+);
                 let env = &VerticalEnvironment::from(env);
 
-                let captures_cell = RefCell::new(captures);
-
                 $(
                     let mut [<c$n>]: Option<ResolvedLayout<$type::Sublayout>> = None;
                 )+
 
-                $(
-                    let mut [<f$n>] = |size: ProposedDimensions| {
-                        // Calls to this layout cannot overlap, so this borrow will not conflict
-                        let mut captures = captures_cell.borrow_mut();
-                        let layout = self.items.$n.layout(&size, env, &mut *captures, &mut state.items.$n);
-                        let size = layout.resolved_size;
-                        [<c$n>] = Some(layout);
-                        size
-                    };
-                )+
-
-                let mut subviews: [(LayoutFn, i8, bool); N] = [
+                let mut layout_child = |index: usize, size: ProposedDimensions| match index {
                     $(
-                        (&mut [<f$n>], self.items.$n.priority(), self.items.$n.is_empty()),
+                        $n => {
+                            let layout = self.items.$n.layout(&size, env, captures, &mut state.items.$n);
+                            let size = layout.resolved_size;
+                            [<c$n>] = Some(layout);
+                            size
+                        }
+                    )+
+                    _ => super::missing_child(),
+                };
+
+                let subviews: [(i8, bool); N] = [
+                    $(
+                        (self.items.$n.priority(), self.items.$n.is_empty()),
                     )+
                 ];
 
                 let mut flexibilities: [Dimension; N] = [Dimension::new(0); N];
                 let mut subviews_indices: [usize; N] = [0; N];
-                let total_size = layout_n(&mut subviews, *offer, self.spacing, &mut flexibilities, &mut subviews_indices);
+                let total_size = layout_n(&mut layout_child, &subviews, *offer, self.spacing, &mut flexibilities, &mut subviews_indices);
+                // `layout_n` lays out every child at least once.
+                let ($(Some([<c$n>])),+) = ($([<c$n>]),+) else {
+                    super::missing_child()
+                };
                 ResolvedLayout {
-                    sublayouts: ($([<c$n>].unwrap()),+),
+                    sublayouts: ($([<c$n>]),+),
                     resolved_size: total_size,
                 }.nested()
             }
@@ -389,7 +397,9 @@ macro_rules! impl_view_for_vstack {
                     {
                         let centers = state.centers;
                         let target = center_along(from, LayoutDirection::Vertical);
-                        for index in nearest_first($ct, |index| centers[index], target) {
+                        let mut order = [0; $ct];
+                        nearest_center_order(&centers, target, &mut order);
+                        for index in order {
                             let result = match index {
                                 $(
                                     $n => {
@@ -409,7 +419,7 @@ macro_rules! impl_view_for_vstack {
                                         result
                                     }
                                 )+
-                                _ => unreachable!(),
+                                _ => super::missing_child(),
                             };
                             if result.is_handled() {
                                 return result;

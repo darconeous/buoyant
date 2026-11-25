@@ -232,6 +232,18 @@ pub(crate) fn nearest_first(
     })
 }
 
+/// Fills `order`, as long as `centers`, with the indices of the centers a
+/// container keeps for its children in [`nearest_first`] order.
+///
+/// Out of line, so every container shares the one copy.
+#[inline(never)]
+pub(crate) fn nearest_center_order(centers: &[i32], target: i32, order: &mut [usize]) {
+    let nearest = nearest_first(centers.len(), |index| centers[index], target);
+    for (slot, index) in order.iter_mut().zip(nearest) {
+        *slot = index;
+    }
+}
+
 /// A stable name for a focusable element, chosen by the application.
 ///
 /// A key identifies what is focused independently of where it sits in the

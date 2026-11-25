@@ -72,15 +72,7 @@ where
                 resolved_size: Dimensions::zero(),
             },
             |v| {
-                let s0 = if let Some(s) = state {
-                    s
-                } else {
-                    *state = Some(v.build_state(captures));
-                    let Some(s) = state else {
-                        unreachable!("Guaranteed to not be any other variant")
-                    };
-                    s
-                };
+                let s0 = state.get_or_insert_with(|| v.build_state(captures));
 
                 let child_layout = v.layout(offer, env, captures, s0);
                 let size = child_layout.resolved_size;
@@ -110,9 +102,7 @@ where
             ),
             (None, _, _) => place.write(TransitionOption::None),
             // This is reachable if an old layout attempts to be reused
-            _ => panic!(
-                "Layout/state branch mismatch in conditional view. Layouts cannot be reused."
-            ),
+            _ => super::match_view::layout_reused(),
         }
     }
 
