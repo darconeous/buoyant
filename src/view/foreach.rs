@@ -8,7 +8,9 @@ use embedded_touch::Touch;
 use crate::{
     environment::LayoutEnvironment,
     event::{EventContext, EventResult, TouchResult},
-    focus::{DefaultFocus, FocusKey, Seek, SeekResult, SeekTarget, center_along, nearest_first},
+    focus::{
+        DefaultFocus, FocusKey, Seek, SeekResult, SeekTarget, center_along, nearest_center_order,
+    },
     layout::{HorizontalAlignment, LayoutDirection, ResolvedLayout, VerticalAlignment},
     primitives::{Dimension, Dimensions, Point, ProposedDimension, ProposedDimensions},
     transition::Opacity,
@@ -624,7 +626,10 @@ where
             {
                 let len = len.min(centers.len());
                 let target = center_along(from, D::layout_dir());
-                for index in nearest_first(len, |index| centers[index], target) {
+                let mut order = [0; N];
+                let order = &mut order[..len];
+                nearest_center_order(&centers[..len], target, order);
+                for &mut index in order {
                     focus.index = index;
                     focus.key = self.key_at(index);
                     focus.tree = match dir.focus_direction() {
@@ -968,7 +973,7 @@ fn layout_n(
         }
 
         let group_indices = &mut subviews_indices[slice_start..slice_start + slice_len];
-        group_indices.sort_unstable_by_key(|&i| flexibilities[i]);
+        super::sort_by_flexibility(group_indices, flexibilities);
 
         let mut remaining_group_size = group_indices.len() as u32;
 

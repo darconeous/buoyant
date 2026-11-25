@@ -11,6 +11,17 @@ use crate::{
     view::{Event, ViewLayout, ViewMarker},
 };
 
+/// Panics on a layout rendered against a conditional view whose branch has
+/// changed since it was laid out.
+///
+/// One shared function, rather than a panic in each of the many
+/// monomorphized conditional views, keeps each of those to a call.
+#[cold]
+#[inline(never)]
+pub(crate) fn layout_reused() -> ! {
+    panic!("Layout/state branch mismatch in conditional view. Layouts cannot be reused.")
+}
+
 /// Helper macro to construct the last variant of a OneOfN enum with DefaultFocus
 #[macro_export]
 #[doc(hidden)]
@@ -470,9 +481,7 @@ macro_rules! define_branch {
                     },
                     )+
                     // This is reachable if an old layout attempts to be reused
-                    _ => panic!(
-                        "Layout/state branch mismatch in conditional view. Layouts cannot be reused."
-                    ),
+                    _ => layout_reused(),
                 }
             }
 
