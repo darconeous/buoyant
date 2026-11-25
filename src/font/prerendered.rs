@@ -16,21 +16,41 @@ use crate::font::{CustomSize, Font, FontMetrics, FontRender, VMetrics};
 use crate::primitives::{Interpolate, Pixel, Point, Size, geometry::Rectangle};
 use crate::render_target::Surface;
 
-/// One rasterized glyph.
+/// One rasterized glyph. Its character is not stored: the face's
+/// [`CharRun`]s give each character the index of its entry.
+///
+/// Every field is a byte, so a table of entries has no padding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GlyphEntry {
-    pub character: char,
     /// Horizontal distance to the next glyph's origin.
-    pub advance: u16,
+    pub advance: u8,
     /// Left edge of the coverage map, relative to the glyph origin.
-    pub left: i16,
+    pub left: i8,
     /// Top edge of the coverage map, relative to the top of the line box.
-    pub top: i16,
-    pub width: u16,
-    pub height: u16,
+    pub top: i8,
+    pub width: u8,
+    pub height: u8,
     /// Index of the glyph's first pixel in [`Face::coverage`], counted in
-    /// pixels (two per byte, high nibble first).
-    pub start: u32,
+    /// pixels (two per byte, high nibble first), little-endian: see
+    /// [`GlyphEntry::start`].
+    pub start: [u8; 3],
+}
+
+impl GlyphEntry {
+    /// Index of the glyph's first pixel in [`Face::coverage`].
+    #[must_use]
+    pub const fn start(&self) -> u32 {
+        u32::from_le_bytes([self.start[0], self.start[1], self.start[2], 0])
+    }
+}
+
+/// Consecutive characters whose glyphs are consecutive entries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CharRun {
+    pub first: char,
+    pub len: u16,
+    /// The entry of `first` in [`Face::glyphs`].
+    pub index: u16,
 }
 
 /// One typeface rasterized at one pixel size.
@@ -42,7 +62,10 @@ pub struct Face {
     /// Typically negative.
     pub descent: i16,
     pub line_gap: i16,
-    /// Sorted by character.
+    /// The characters the face has, sorted. Faces of one typeface share
+    /// them.
+    pub runs: &'static [CharRun],
+    /// One entry per character, in character order.
     pub glyphs: &'static [GlyphEntry],
     /// 4-bit coverage, two pixels per byte, high nibble first.
     pub coverage: &'static [u8],
@@ -51,23 +74,33 @@ pub struct Face {
 }
 
 impl Face {
+    /// The entry of `character` in [`Face::glyphs`], if the face has it.
+    #[must_use]
+    pub fn index(&self, character: char) -> Option<usize> {
+        let c = u32::from(character);
+        let within = |run: &CharRun| {
+            let offset = c.wrapping_sub(u32::from(run.first));
+            (offset < u32::from(run.len)).then(|| usize::from(run.index) + offset as usize)
+        };
+        // Runs usually open with printable ASCII.
+        let first = self.runs.first()?;
+        within(first).or_else(|| {
+            let after = self.runs.partition_point(|run| run.first <= character);
+            within(self.runs.get(after.checked_sub(1)?)?)
+        })
+    }
+
+    /// Whether the face has its own glyph for `character`.
+    #[must_use]
+    pub fn has(&self, character: char) -> bool {
+        self.index(character).is_some()
+    }
+
+    /// The glyph for `character`, or the fallback.
     #[must_use]
     pub fn glyph(&self, character: char) -> Option<&GlyphEntry> {
-        // Glyphs are sorted, and tables usually open with a run of
-        // consecutive characters (printable ASCII): within that run a
-        // character's index is its distance from the first.
-        // Below the first character this wraps to an index past the end.
-        let first = self.glyphs.first().map_or(0, |g| u32::from(g.character));
-        let index = u32::from(character).wrapping_sub(first) as usize;
-        self.glyphs
-            .get(index)
-            .filter(|g| g.character == character)
-            .or_else(|| {
-                self.glyphs
-                    .binary_search_by_key(&character, |g| g.character)
-                    .ok()
-                    .and_then(|i| self.glyphs.get(i))
-            })
+        self.index(character)
+            .and_then(|i| self.glyphs.get(i))
             .or(self.fallback.as_ref())
     }
 
@@ -183,7 +216,7 @@ impl<C: Interpolate + Copy> FontRender<C> for PrerenderedFont {
         });
         let pixels = (0..u32::from(glyph.height)).flat_map(move |y| {
             (0..width).filter_map(move |x| {
-                shades[usize::from(face.coverage_at(glyph.start + y * width + x))].map(|color| {
+                shades[usize::from(face.coverage_at(glyph.start() + y * width + x))].map(|color| {
                     Pixel {
                         point: origin + Point::new(x as i32, y as i32),
                         color,
