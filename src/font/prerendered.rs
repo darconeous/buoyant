@@ -128,6 +128,99 @@ impl Face {
         pixels.consume(start % 8);
         pixels
     }
+    /// `glyph`'s coverage, a row at a time: see [`Rows`].
+    #[must_use]
+    pub fn rows(&self, glyph: &GlyphEntry) -> Rows<'_> {
+        let start = glyph.start();
+        let mut rows = Rows {
+            face: self,
+            next: (start / 8) as usize,
+            buffer: 0,
+            filled: 0,
+            width: glyph.width,
+            left: glyph.height,
+            above: [coding::band(coding::EDGE) as u8; 256],
+        };
+        rows.refill();
+        rows.buffer <<= start % 8;
+        rows.filled -= start % 8;
+        rows
+    }
+}
+
+/// A glyph's coverage decoded a row at a time, as [`Pixels`] decodes it
+/// but without a call and its bookkeeping for each pixel: a glyph drawn
+/// row by row decodes much faster.
+#[derive(Clone, Debug)]
+pub struct Rows<'a> {
+    face: &'a Face,
+    /// The coverage byte to read next.
+    next: usize,
+    /// Bits read and not yet used, from the most significant.
+    buffer: u32,
+    filled: u32,
+    width: u8,
+    /// Rows not yet decoded.
+    left: u8,
+    /// The bands of the row above, by column.
+    above: [u8; 256],
+}
+
+impl Rows<'_> {
+    /// Decodes the next row into `levels`, one level from 0 (clear) to 15
+    /// (covered) for each of the glyph's columns; `levels` past the glyph's
+    /// width are left alone, and a shorter `levels` takes what fits.
+    /// Returns `false`, decoding nothing, past the last row.
+    pub fn next_row(&mut self, levels: &mut [u8]) -> bool {
+        if self.left == 0 {
+            return false;
+        }
+        self.left -= 1;
+        let codes = self.face.codes;
+        let coverage = self.face.coverage;
+        let (mut buffer, mut filled, mut next) = (self.buffer, self.filled, self.next);
+        let mut left = BANDS[usize::from(coding::EDGE)];
+        let width = usize::from(self.width);
+        for (column, above) in self.above[..width].iter_mut().enumerate() {
+            let context = usize::from(left) * coding::LEVELS + usize::from(*above);
+            if filled < coding::PEEK as u32 {
+                while filled <= 24 {
+                    let byte = coverage.get(next).copied().unwrap_or(0);
+                    buffer |= u32::from(byte) << (24 - filled);
+                    filled += 8;
+                    next += 1;
+                }
+            }
+            let window = (buffer >> (32 - coding::PEEK)) as usize;
+            let entry = codes
+                .get(context << coding::PEEK | window)
+                .copied()
+                .unwrap_or(0);
+            let level = entry & 0x0f;
+            // At most 15 bits: the shift stays inside the word.
+            let bits = u32::from(entry >> 4);
+            buffer <<= bits;
+            filled = filled.saturating_sub(bits);
+            let band = BANDS[usize::from(level)];
+            *above = band;
+            left = band;
+            if let Some(out) = levels.get_mut(column) {
+                *out = level;
+            }
+        }
+        (self.buffer, self.filled, self.next) = (buffer, filled, next);
+        true
+    }
+
+    /// Tops the buffer up with whole bytes, past the end reading zeros.
+    fn refill(&mut self) {
+        while self.filled <= 24 {
+            let byte = self.face.coverage.get(self.next).copied().unwrap_or(0);
+            self.buffer |= u32::from(byte) << (24 - self.filled);
+            self.filled += 8;
+            self.next += 1;
+        }
+    }
 }
 
 /// A glyph's coverage, decoded a pixel at a time: its column, its row, and
