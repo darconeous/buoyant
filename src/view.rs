@@ -79,7 +79,7 @@ pub use paginate::Paginate;
 pub use rotary::Rotary;
 pub use scroll_view::ScrollView;
 pub use spacer::Spacer;
-pub(crate) use text::{CharacterWrap, WordWrap};
+pub use text::{CharacterWrap, WordWrap, WrappedLine};
 pub use text::{HorizontalTextAlignment, Text, WrapStrategy};
 pub use text_field::{EditBuffer, EditText, TextArea, TextField};
 pub use view_that_fits::{FitAxis, ViewThatFits};

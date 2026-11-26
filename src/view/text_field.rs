@@ -227,7 +227,8 @@ impl<T: EditText + Default> From<&str> for EditBuffer<T> {
 /// Every byte belongs to a line: whitespace where a line breaks, and a
 /// newline, end the line before the break. Text that ends at a break is
 /// followed by an empty line, where a cursor at the end sits.
-struct EditLines<'t, M> {
+#[derive(Debug, Clone)]
+pub struct EditLines<'t, M> {
     text: &'t str,
     width: u32,
     metrics: &'t M,
@@ -236,7 +237,8 @@ struct EditLines<'t, M> {
 }
 
 impl<'t, M: FontMetrics> EditLines<'t, M> {
-    const fn new(text: &'t str, width: u32, metrics: &'t M) -> Self {
+    /// The lines of `text` wrapped at `width`.
+    pub const fn new(text: &'t str, width: u32, metrics: &'t M) -> Self {
         Self {
             text,
             width,
@@ -292,7 +294,7 @@ impl<M: FontMetrics> Iterator for EditLines<'_, M> {
 }
 
 /// The width of `text`, leaving out a newline.
-fn advance_of(text: &str, metrics: &impl FontMetrics) -> u32 {
+pub fn advance_of(text: &str, metrics: &impl FontMetrics) -> u32 {
     font::clusters(text)
         .filter(|cluster| !cluster.ends_with('\n'))
         .map(|cluster| metrics.cluster_advance(cluster))
@@ -301,7 +303,7 @@ fn advance_of(text: &str, metrics: &impl FontMetrics) -> u32 {
 
 /// The width `text` wraps at in an area `width` wide: text longer than
 /// `max_lines` leaves `scroll_bar_room` beside it for the scroll bar.
-fn wrap_width(
+pub fn wrap_width(
     text: &str,
     width: u32,
     scroll_bar_room: u32,
@@ -321,7 +323,7 @@ fn wrap_width(
 
 /// The line holding `cursor`, and how far into it the cursor is. A cursor at
 /// a break begins the next line.
-fn caret_of(text: &str, cursor: usize, wrap: u32, metrics: &impl FontMetrics) -> (usize, u32) {
+pub fn caret_of(text: &str, cursor: usize, wrap: u32, metrics: &impl FontMetrics) -> (usize, u32) {
     let mut last = (0, 0..0);
     for (index, line) in EditLines::new(text, wrap, metrics).enumerate() {
         if cursor < line.end {
@@ -337,10 +339,12 @@ fn caret_of(text: &str, cursor: usize, wrap: u32, metrics: &impl FontMetrics) ->
 }
 
 /// Where the cursor goes a line up or down from `cursor`, with text wrapped
-/// at `wrap`: as near across the line as `goal`, or as the cursor already is
+/// at `wrap`.
+///
+/// It goes as near across the line as `goal`, or as the cursor already is
 /// without one. Returns the new cursor and the goal kept for the next move,
 /// or `None` from the first line up or the last line down.
-fn line_move(
+pub fn line_move(
     text: &str,
     cursor: usize,
     wrap: u32,
@@ -359,7 +363,7 @@ fn line_move(
 
 /// Where the cursor goes on `line` of text wrapped at `wrap`, as near across
 /// it as `x`. A line past the last is the last.
-fn offset_at(text: &str, wrap: u32, metrics: &impl FontMetrics, line: usize, x: u32) -> usize {
+pub fn offset_at(text: &str, wrap: u32, metrics: &impl FontMetrics, line: usize, x: u32) -> usize {
     let mut lines = EditLines::new(text, wrap, metrics).peekable();
     let mut index = 0;
     while let Some(range) = lines.next() {

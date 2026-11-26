@@ -29,6 +29,7 @@ pub struct CharacterWrap<'a, F> {
 }
 
 impl<'a, F: FontMetrics> CharacterWrap<'a, F> {
+    /// The lines of `text` in `available_width`, measured by `font`.
     pub fn new(
         text: &'a str,
         available_width: impl Into<ProposedDimension>,
@@ -47,13 +48,13 @@ impl<'a, F: FontMetrics> CharacterWrap<'a, F> {
     }
 
     /// Get the first non-empty line and its Y offset.
-    #[expect(clippy::ref_option)]
+    #[must_use]
     pub fn first_non_empty_line(&self) -> &'_ Option<(&'a str, i32)> {
         &self.first_non_empty_line
     }
 
     /// Get the last non-empty line and its Y offset.
-    #[expect(clippy::ref_option)]
+    #[must_use]
     pub fn last_non_empty_line(&self) -> &'_ Option<(&'a str, i32)> {
         &self.last_non_empty_line
     }

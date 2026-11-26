@@ -302,11 +302,15 @@ impl FocusState {
         self.request
     }
 
-    pub(crate) fn take_request(&mut self) -> Option<FocusKey> {
+    /// Takes the request not yet acted on, leaving none: for a view layer
+    /// outside this crate that settles focus itself.
+    pub fn take_request(&mut self) -> Option<FocusKey> {
         self.request.take()
     }
 
-    pub(crate) fn set_current(&mut self, key: Option<FocusKey>) {
+    /// Records where focus is: for a view layer outside this crate that
+    /// settles focus itself.
+    pub fn set_current(&mut self, key: Option<FocusKey>) {
         self.current = key;
     }
 }

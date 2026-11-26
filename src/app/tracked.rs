@@ -15,8 +15,8 @@ pub struct Tracked<'a, T> {
 }
 
 impl<'a, T> Tracked<'a, T> {
-    /// Creates a new tracked value.
-    pub(crate) fn new(value: &'a mut T, flag: &'a mut bool) -> Self {
+    /// Creates a new tracked value, which sets `flag` when it is changed.
+    pub fn new(value: &'a mut T, flag: &'a mut bool) -> Self {
         Self {
             value,
             changed: flag,

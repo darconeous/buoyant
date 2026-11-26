@@ -57,12 +57,18 @@ pub struct Text<'a, T, F: Font> {
     pub(crate) line_limit: Option<u16>,
 }
 
+/// One line of wrapped text.
 #[derive(Debug, PartialEq, Eq)]
 pub struct WrappedLine<'a> {
+    /// The line's text, a slice of what was wrapped.
     pub content: &'a str,
+    /// Its advance width.
     pub width: u32,
+    /// Its drawn width, where precise bounds were asked for.
     pub precise_width: u32,
+    /// Where its drawn pixels start, where precise bounds were asked for.
     pub min_x: i32,
+    /// Where its drawn pixels end, where precise bounds were asked for.
     pub max_x: i32,
 }
 

@@ -4,6 +4,8 @@ use crate::{
     view::text::WrappedLine,
 };
 
+/// Text broken into lines at the last space that fits, and within a word
+/// only where no space does.
 #[derive(Debug, Clone)]
 pub struct WordWrap<'a, F> {
     remaining: &'a str,
@@ -17,6 +19,7 @@ pub struct WordWrap<'a, F> {
 }
 
 impl<'a, F: FontMetrics> WordWrap<'a, F> {
+    /// The lines of `text` in `available_width`, measured by `font`.
     pub fn new(
         text: &'a str,
         available_width: impl Into<ProposedDimension>,
@@ -36,13 +39,13 @@ impl<'a, F: FontMetrics> WordWrap<'a, F> {
     }
 
     /// Get the first non-empty line and its Y offset.
-    #[expect(clippy::ref_option)]
+    #[must_use]
     pub fn first_non_empty_line(&self) -> &'_ Option<(&'a str, i32)> {
         &self.first_non_empty_line
     }
 
     /// Get the last non-empty line and its Y offset.
-    #[expect(clippy::ref_option)]
+    #[must_use]
     pub fn last_non_empty_line(&self) -> &'_ Option<(&'a str, i32)> {
         &self.last_non_empty_line
     }
