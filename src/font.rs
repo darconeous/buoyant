@@ -25,7 +25,56 @@ mod u8g2;
 #[cfg(feature = "unicode-segmentation")]
 #[must_use]
 pub fn clusters(text: &str) -> impl DoubleEndedIterator<Item = &str> + Clone {
-    unicode_segmentation::UnicodeSegmentation::graphemes(text, true)
+    if text.is_ascii() {
+        Clusters::Ascii(text)
+    } else {
+        Clusters::Unicode(unicode_segmentation::UnicodeSegmentation::graphemes(
+            text, true,
+        ))
+    }
+}
+
+/// [`clusters`], ASCII text apart: there every byte is a cluster but a
+/// carriage return before a line feed, which joins it (UAX #29 GB3), so the
+/// tables need not be searched.
+#[cfg(feature = "unicode-segmentation")]
+#[derive(Clone)]
+enum Clusters<'a> {
+    /// What is left of ASCII text.
+    Ascii(&'a str),
+    Unicode(unicode_segmentation::Graphemes<'a>),
+}
+
+#[cfg(feature = "unicode-segmentation")]
+impl<'a> Iterator for Clusters<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        match self {
+            Self::Ascii(rest) => {
+                let len = if rest.starts_with("\r\n") { 2 } else { 1 };
+                let (cluster, after) = rest.split_at_checked(len)?;
+                *rest = after;
+                Some(cluster)
+            }
+            Self::Unicode(graphemes) => graphemes.next(),
+        }
+    }
+}
+
+#[cfg(feature = "unicode-segmentation")]
+impl<'a> DoubleEndedIterator for Clusters<'a> {
+    fn next_back(&mut self) -> Option<&'a str> {
+        match self {
+            Self::Ascii(rest) => {
+                let len = if rest.ends_with("\r\n") { 2 } else { 1 };
+                let (before, cluster) = rest.split_at_checked(rest.len().checked_sub(len)?)?;
+                *rest = before;
+                Some(cluster)
+            }
+            Self::Unicode(graphemes) => graphemes.next_back(),
+        }
+    }
 }
 
 /// The grapheme clusters of `text`, in order.
@@ -222,4 +271,51 @@ impl VMetrics {
 pub trait CustomSize {
     #[must_use]
     fn with_size(self, size: u32) -> Self;
+}
+
+#[cfg(all(test, feature = "unicode-segmentation"))]
+mod tests {
+    use std::vec::Vec;
+
+    use unicode_segmentation::UnicodeSegmentation as _;
+
+    /// ASCII text splits as the full segmentation splits it, from either
+    /// end and from both at once.
+    #[test]
+    fn ascii_clusters_match_graphemes() {
+        let texts = [
+            "",
+            "a",
+            "ab",
+            "\r",
+            "\n",
+            "\r\n",
+            "\n\r",
+            "\r\r\n",
+            "\r\n\r\n",
+            "a\r\nb",
+            "a\rb\nc",
+            "line one\r\nline two\n",
+            "  tab\tand\x07bell\x7f",
+            "\r\n\n\r\r",
+        ];
+        for text in texts {
+            let expected: Vec<&str> = text.graphemes(true).collect();
+            assert_eq!(
+                super::clusters(text).collect::<Vec<_>>(),
+                expected,
+                "{text:?}"
+            );
+            let mut backward: Vec<&str> = super::clusters(text).rev().collect();
+            backward.reverse();
+            assert_eq!(backward, expected, "{text:?} backward");
+            for front in 0..=expected.len() {
+                let mut both = super::clusters(text);
+                let head: Vec<&str> = both.by_ref().take(front).collect();
+                let mut tail: Vec<&str> = both.rev().collect();
+                tail.reverse();
+                assert_eq!([head, tail].concat(), expected, "{text:?} split at {front}");
+            }
+        }
+    }
 }
